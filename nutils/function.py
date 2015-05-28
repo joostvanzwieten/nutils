@@ -387,6 +387,16 @@ class ArrayFunc( Evaluable ):
   __abs__  = lambda self: abs( self )
   __len__  = lambda self: self.shape[0]
   sum      = lambda self, axis=None: sum( self, axis )
+  conjugate = lambda self: conjugate( self )
+  conj     = lambda self: conjugate( self )
+
+  @property
+  def real( self ):
+    return real( self )
+
+  @property
+  def imag( self ):
+    return imag( self )
 
   @property
   def size( self ):
@@ -595,6 +605,18 @@ class ArrayFunc( Evaluable ):
     return '%s<%s>' % ( self.__class__.__name__, ','.join( str(n) for n in self.shape ) )
 
   __repr__ = __str__
+
+  def _real( self ):
+    if issubclass( self.kind, numbers.Real ):
+      return self
+
+# def _imag( self ):
+#   if issubclass( self.kind, numbers.Real ):
+#     return _zeros_like( self )
+
+  def _conjugate( self ):
+    if issubclass( self.kind, numbers.Real ):
+      return self
 
 class ElementSize( ArrayFunc ):
   'dimension of hypercube with same volume as element'
@@ -1737,6 +1759,10 @@ class Power( ArrayFunc ):
   def _edit( self, op ):
     return power( op(self.func), op(self.power) )
 
+  def _abs( self ):
+    if self.power % 2 == 0 and issubclass( self.kind, numbers.Real ):
+      return self
+
 class ElemFunc( ArrayFunc ):
   'trivial func'
 
@@ -1829,6 +1855,144 @@ class Sign( ArrayFunc ):
 
   def _edit( self, op ):
     return sign( op(self.func) )
+
+class Abs( ArrayFunc ):
+  'abs'
+
+  def __init__( self, func ):
+    'constructor'
+
+    assert _isfunc( func )
+    self.func = func
+    if issubclass( func.kind, numbers.Real ):
+      kind = func.kind
+    else: # func is complex
+      kind = numbers.Real
+    ArrayFunc.__init__( self, args=[func], shape=func.shape, kind=kind )
+
+  def evalf( self, arr ):
+    assert arr.ndim == self.ndim+1
+    return numpy.abs( arr )
+
+  def _localgradient( self, ndims ):
+    return sign( self.func )[...,_] * localgradient( self.func, ndims )
+
+  def _takediag( self ):
+    return abs( takediag(self.func) )
+
+  def _get( self, axis, item ):
+    return abs( get( self.func, axis, item ) )
+
+  def _take( self, index, axis ):
+    return abs( take( self.func, index, axis ) )
+
+  def _opposite( self ):
+    return abs( opposite( self.func ) )
+
+  def _sign( self ):
+    return expand( 1., self.shape )
+
+  def _abs( self ):
+    return self
+
+  def _power( self, n ):
+    if n % 2 == 0 and issubclass( self.func.kind, numbers.Real ):
+      return power( self.func, n )
+
+class Real( ArrayFunc ):
+  'real'
+
+  def __init__( self, func ):
+    'constructor'
+
+    assert _isfunc( func )
+    self.func = func
+    if issubclass( func.kind, numbers.Real ):
+      kind = func.kind
+    else: # func is complex
+      kind = numbers.Real
+    ArrayFunc.__init__( self, args=[func], shape=func.shape, kind=kind )
+
+  def evalf( self, arr ):
+    assert arr.ndim == self.ndim+1
+    return numpy.real( arr )
+
+  def _localgradient( self, ndims ):
+    return TODO
+
+  def _takediag( self ):
+    return real( takediag(self.func) )
+
+  def _get( self, axis, item ):
+    return real( get( self.func, axis, item ) )
+
+  def _take( self, index, axis ):
+    return real( take( self.func, index, axis ) )
+
+  def _opposite( self ):
+    return real( opposite( self.func ) )
+
+class Imag( ArrayFunc ):
+  'imag'
+
+  def __init__( self, func ):
+    'constructor'
+
+    assert _isfunc( func )
+    self.func = func
+    if issubclass( func.kind, numbers.Real ):
+      kind = func.kind
+    else: # func is complex
+      kind = numbers.Real
+    ArrayFunc.__init__( self, args=[func], shape=func.shape, kind=kind )
+
+  def evalf( self, arr ):
+    assert arr.ndim == self.ndim+1
+    return numpy.imag( arr )
+
+  def _localgradient( self, ndims ):
+    return TODO
+
+  def _takediag( self ):
+    return imag( takediag(self.func) )
+
+  def _get( self, axis, item ):
+    return imag( get( self.func, axis, item ) )
+
+  def _take( self, index, axis ):
+    return imag( take( self.func, index, axis ) )
+
+  def _opposite( self ):
+    return imag( opposite( self.func ) )
+
+class Conjugate( ArrayFunc ):
+  'conjugate'
+
+  def __init__( self, func ):
+    'constructor'
+
+    assert _isfunc( func )
+    self.func = func
+    ArrayFunc.__init__( self, args=[func], shape=func.shape, kind=func.kind )
+
+  def evalf( self, arr ):
+    assert arr.ndim == self.ndim+1
+    return numpy.conjugate( arr )
+
+  def _localgradient( self, ndims ):
+    return TODO
+
+  def _takediag( self ):
+    return conjugate( takediag(self.func) )
+
+  def _get( self, axis, item ):
+    return conjugate( get( self.func, axis, item ) )
+
+  def _take( self, index, axis ):
+    return conjugate( take( self.func, index, axis ) )
+
+  def _opposite( self ):
+    return conjugate( opposite( self.func ) )
 
 class Pointdata( ArrayFunc ):
   'pointdata'
@@ -3201,6 +3365,68 @@ def sign( arg ):
 
   return Sign( arg )
 
+def abs( arg ):
+  'abs'
+
+  arg = asarray( arg )
+
+  if isinstance( arg, numpy.ndarray ):
+    return numpy.abs( arg )
+
+  retval = _call( arg, '_abs' )
+  if retval is not None:
+    assert retval.shape == arg.shape, 'bug in %s._abs' % arg
+    return retval
+
+  return Abs( arg )
+
+def real( arg ):
+  'real'
+
+  arg = asarray( arg )
+
+  if isinstance( arg, numpy.ndarray ):
+    return numpy.real( arg )
+
+  retval = _call( arg, '_real' )
+  if retval is not None:
+    assert retval.shape == arg.shape, 'bug in %s._real' % arg
+    return retval
+
+  return Real( arg )
+
+def imag( arg ):
+  'imag'
+
+  arg = asarray( arg )
+
+  if isinstance( arg, numpy.ndarray ):
+    return numpy.imag( arg )
+
+  retval = _call( arg, '_imag' )
+  if retval is not None:
+    assert retval.shape == arg.shape, 'bug in %s._imag' % arg
+    return retval
+
+  return Imag( arg )
+
+def conjugate( arg ):
+  'conjugate'
+
+  arg = asarray( arg )
+
+  if isinstance( arg, numpy.ndarray ):
+    return numpy.conjugate( arg )
+
+  retval = _call( arg, '_conjugate' )
+  if retval is not None:
+    assert retval.shape == arg.shape, 'bug in %s._conjugate' % arg
+    return retval
+
+  return Conjugate( arg )
+
+conj = conjugate
+
 def eig( arg, axes=(-2,-1), symmetric=False ):
   '''eig( arg, axes [ symmetric ] )
   Compute the eigenvalues and vectors of a matrix. The eigenvalues and vectors
@@ -3276,7 +3502,6 @@ greater = lambda arg1, arg2=None: pointwise( arg1 if arg2 is None else [arg1,arg
 less = lambda arg1, arg2=None: pointwise( arg1 if arg2 is None else [arg1,arg2], numpy.less, _zeros_like )
 min = lambda arg1, *args: choose( argmin( arg1 if not args else (arg1,)+args, axis=0 ), arg1 if not args else (arg1,)+args )
 max = lambda arg1, *args: choose( argmax( arg1 if not args else (arg1,)+args, axis=0 ), arg1 if not args else (arg1,)+args )
-abs = lambda arg: arg * sign(arg)
 sinh = lambda arg: .5 * ( exp(arg) - exp(-arg) )
 cosh = lambda arg: .5 * ( exp(arg) + exp(-arg) )
 tanh = lambda arg: 1 - 2. / ( exp(2*arg) + 1 )
@@ -3292,6 +3517,7 @@ mean = lambda arg: .5 * ( arg + opposite(arg) )
 jump = lambda arg: arg - opposite(arg)
 add_T = lambda arg, axes=(-2,-1): swapaxes( arg, axes ) + arg
 edit = lambda arg, f: arg._edit(f) if _isevaluable(arg) else arg
+angle = lambda arg: pointwise( [arg], numpy.angle, None )
 
 def swapaxes( arg, axes=(-2,-1) ):
   'swap axes'
