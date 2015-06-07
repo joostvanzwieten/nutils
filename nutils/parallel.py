@@ -155,7 +155,11 @@ def shzeros( shape, dtype=float ):
   else:
     assert all( numeric.isint(sh) for sh in shape )
   size = numpy.product( shape ) if shape else 1
-  if dtype == float:
+  if dtype == complex:
+    typecode = 'd'
+    dtype = numpy.complex128
+    size *= 2
+  elif dtype == float:
     typecode = 'd'
     dtype = numpy.float64
   elif dtype == int:
