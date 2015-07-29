@@ -755,8 +755,8 @@ class StructuredTopology( Topology ):
       topo[ 'dir{}'.format(idim) ] = Topology( group, self.ndims-1 )
     return topo
 
-  def basis_spline( self, degree, neumann=(), knots=None, periodic=None, closed=False, removedofs=None ):
-    'spline from vertices'
+  def _basis_spline( self, degree, neumann=(), periodic=None, closed=False, removedofs=None ):
+    'spline with structure information'
 
     if periodic is None:
       periodic = self.periodic
@@ -770,14 +770,13 @@ class StructuredTopology( Topology ):
       assert len(removedofs) == self.ndims
 
     vertex_structure = numpy.array( 0 )
-    dofcount = 1
+    dofcount = []
     slices = []
 
     for idim in range( self.ndims ):
       periodic_i = idim in periodic
       n = self.structure.shape[idim]
       p = degree[idim]
-      #k = knots[idim]
 
       if closed == False:
         neumann_i = (idim*2 in neumann and 1) | (idim*2+1 in neumann and 2)
@@ -806,7 +805,7 @@ class StructuredTopology( Topology ):
         numbers -= mask.cumsum()
         vertex_structure = vertex_structure[...,_] * nd + numbers
         vertex_structure[...,mask] = -1
-      dofcount *= nd
+      dofcount.append( nd )
       slices.append( [ slice(i,i+p+1) for i in range(n) ] )
 
     dofmap = {}
@@ -830,6 +829,7 @@ class StructuredTopology( Topology ):
           funcmap[elem.transform] = (std,mask),
 
     if hasnone:
+      dofcount = util.product( dofcount )
       touched = numpy.zeros( dofcount, dtype=bool )
       for dofs in dofmap.itervalues():
         touched[ dofs ] = True
@@ -837,7 +837,13 @@ class StructuredTopology( Topology ):
       dofcount = int(renumber[-1])
       dofmap = dict( ( trans, renumber[dofs]-1 ) for trans, dofs in dofmap.items() )
 
-    return function.function( funcmap, dofmap, dofcount, self.ndims )
+    return funcmap, dofmap, dofcount
+
+  def basis_spline( self, degree, neumann=(), periodic=None, closed=False, removedofs=None ):
+    'spline from vertices'
+
+    funcmap, dofmap, dofcount = self._basis_spline( degree, neumann=neumann, periodic=periodic, closed=closed, removedofs=removedofs )
+    return function.function( funcmap, dofmap, util.product( dofcount ), self.ndims )
 
   def basis_bspline( self, degree, knotvalues=None, knotmultiplicities=None, periodic=None ):
     'Bspline from vertices'
