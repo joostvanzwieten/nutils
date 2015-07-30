@@ -25,7 +25,7 @@ out in element loops. For lower level operations topologies can be used as
 
 from __future__ import print_function, division
 from . import element, function, util, numpy, parallel, matrix, log, core, numeric, cache, rational, transform, _
-import warnings, functools
+import warnings, functools, itertools
 
 _identity = lambda x: x
 
@@ -1402,6 +1402,178 @@ class RevolvedTopology( Topology ):
   def refined_by( self, refine ):
     return RevolvedTopology( self.basetopo.refined_by(refine) )
 
+class MultipatchTopology( Topology ):
+  'multipatch topology'
+
+  @staticmethod
+  def build_boundarydata( connectivity ):
+    'build boundary data based on connectivity'
+
+    boundarydata = []
+    for patch in connectivity:
+      ndims = len( patch.shape )
+      patchboundarydata = []
+      for dim, side in itertools.product( range( ndims ), [0,-1] ):
+        # ignore vertices at opposite face
+        verts = numpy.array( patch )
+        opposite = tuple( {0:-1, -1:0}[side] if i == dim else slice(None) for i in range( ndims ) )
+        verts[opposite] = verts.max()+1
+        if len( set( verts.flat ) ) != 2**(ndims-1)+1:
+          raise NotImplementedError( 'Cannot compute canonical boundary if vertices are used more than once.' )
+        # reverse axes such that lowest vertex index is at first position
+        reverse = tuple( slice(None, None, -1) if i else slice(None) for i in numpy.unravel_index(verts.argmin(), verts.shape) )
+        verts = verts[reverse]
+        # transpose such that second lowest vertex connects to lowest vertex in first dimension, third in second dimension, et cetera
+        k = [ verts[tuple( 1 if i == j else 0 for j in range( ndims ) )] for i in range( ndims ) ]
+        transpose = tuple( sorted( range( ndims ), key=k.__getitem__ ) )
+        verts = verts.transpose( transpose )
+        # boundarid
+        boundaryid = tuple( verts[...,0].flat )
+        patchboundarydata.append( (boundaryid,dim,side,reverse,transpose) )
+      boundarydata.append( tuple( patchboundarydata ) )
+
+    # TODO: boundary sanity checks
+
+    return boundarydata
+
+  def __init__( self, patches ):
+    'constructor'
+
+    self.patches = tuple( patches )
+
+    self._patchinterfaces = {}
+    for topo, boundaries in self.patches:
+      for boundaryid, dim, side, reverse, transpose in boundaries:
+        self._patchinterfaces.setdefault( boundaryid, [] ).append(( topo, dim, side, reverse, transpose ))
+    self._patchinterfaces = {
+      boundaryid: tuple( data )
+      for boundaryid, data in self._patchinterfaces.items()
+      if len( data ) > 1
+    }
+
+    elements = itertools.chain(*( topo.elements for topo, boundaries in self.patches ))
+    groups = { 'patch{}'.format(i): topo for i, (topo, bounaries) in enumerate( self.patches ) }
+    Topology.__init__( self, elements, groups=groups )
+
+  def basis_spline( self, degree, patchcontinuous=True ):
+    'spline from vertices'
+
+    funcmap = {}
+    dofmap = {}
+    dofcount = 0
+    commonboundarydofs = {}
+    for topo, boundaries in self.patches:
+      # build structured spline basis on patch `topo`
+      patchfuncmap, patchdofmap, patchdofcount = topo._basis_spline( degree )
+      funcmap.update( patchfuncmap )
+      # renumber dofs
+      dofmap.update( (trans,dofs+dofcount) for trans, dofs in patchdofmap.items() )
+      if patchcontinuous:
+        # reconstruct multidimensional dof structure
+        dofs = dofcount + numpy.arange( util.product( patchdofcount ), dtype=int ).reshape( patchdofcount )
+        for boundaryid, dim, side, reverse, transpose in boundaries:
+          # get patch boundary dofs and reorder to canonical form
+          boundarydofs = dofs[reverse].transpose(transpose)[...,0].ravel()
+          # append boundary dofs to list (in increasing order, automatic by outer loop and dof increment)
+          commonboundarydofs.setdefault( boundaryid, [] ).append( boundarydofs )
+      dofcount += util.product( patchdofcount )
+
+    if patchcontinuous:
+      # build merge mapping: merge common boundary dofs (from low to high)
+      pairs = itertools.chain(*( zip( *dofs ) for dofs in commonboundarydofs.values() if len( dofs ) > 1 ))
+      merge = {}
+      for dofs in sorted( pairs ):
+        dst = merge.get( dofs[0], dofs[0] )
+        for src in dofs[1:]:
+          merge[src] = dst
+      # build renumber mapping: renumber remaining dofs consecutively, starting at 0
+      remainder = set( merge.get( dof, dof ) for dof in range( dofcount ) )
+      renumber = dict( zip( sorted( remainder ), range( len( remainder ) ) ) )
+      # apply mappings
+      dofmap = dict(
+        (k, numpy.array( tuple( renumber[merge.get( dof, dof )] for dof in v.flat ), dtype=int ).reshape( v.shape ))
+        for k, v in dofmap.items() )
+      dofcount = len( remainder )
+
+    return function.function( funcmap, dofmap, dofcount, self.ndims )
+
+  @cache.property
+  def patchindex( self ):
+    'patch index'
+
+    return function.Elemwise(
+      {topo.elements[0].transform.sliceto(1): i for i, (topo, boundaries) in enumerate(self.patches)},
+      ())
+
+  @cache.property
+  def boundary( self ):
+    'boundary'
+
+    # FIXME: What to do if there is no boundary?  `util.sum` will fail with, for the user, an obscure error.
+
+    names = dict( zip(
+      ( 'right', 'left', 'top', 'bottom', 'back', 'front' ),
+      itertools.product( range( self.ndims ), [-1,0] ) ) )
+    topos = []
+    groups = {}
+    for i, (topo, boundaries) in enumerate( self.patches ):
+      for boundaryid, dim, side, reverse, transpose in boundaries:
+        if boundaryid in self._patchinterfaces:
+          continue
+        boundarytopo = topo.boundary[names[dim,side]]
+        topos.append( boundarytopo )
+        groups['patch{}-{}'.format( i, names[dim,side] )] = boundarytopo
+    topos = util.sum( topos )
+    topos.groups.update( groups )
+    return topos
+
+  @cache.property
+  def interfaces( self ):
+    'interfaces'
+
+    intrapatchtopo = util.sum( topo.interfaces for topo, boundaries in self.patches )
+
+    names = dict( zip(
+      itertools.product( range( self.ndims ), [-1,0] ),
+      ( 'right', 'left', 'top', 'bottom', 'back', 'front' )
+    ) )
+    btopos = []
+    bconnectivity = []
+    for boundaryid, patchdata in self._patchinterfaces.items():
+      if len( patchdata ) > 2:
+        raise ValueError( 'Cannot create interfaces of multipatch topologies with more than two interface connections.' )
+      pairs = []
+      for topo, dim, side, reverse, transpose in patchdata:
+        # get structured set of boundary elements
+        elems = topo.boundary[names[dim, side]].structure
+        # add singleton axis
+        elems = elems[tuple( _ if i == dim else slice( None ) for i in range( self.ndims ) )]
+        # apply canonical transformation
+        elems = elems[reverse].transpose(transpose)[..., 0]
+        shape = elems.shape
+        pairs.append( elems.flat )
+      # join element pairs
+      elems = [
+        element.Element( elem_a.reference, elem_a.transform, opposite=elem_b.transform )
+        for elem_a, elem_b in zip( *pairs )
+      ]
+      # create structured topology of joined element pairs
+      bpatch = numpy.array( boundaryid ).reshape( (2,)*(self.ndims-1) )
+      btopos.append( StructuredTopology( numpy.array( elems ).reshape( shape ) ) )
+      bconnectivity.append( bpatch )
+    # create multipatch topology of interpatch boundaries
+    interpatchtopo = MultipatchTopology( zip( btopos, self.build_boundarydata( bconnectivity ) ) )
+
+    topo = intrapatchtopo + interpatchtopo
+    topo.groups['intrapatch'] = intrapatchtopo
+    topo.groups['interpatch'] = interpatchtopo
+    return topo
+
+  @cache.property
+  def refined( self ):
+    'refine'
+
+    return MultipatchTopology( (topo.refined, boundaries) for topo, boundaries in self.patches )
 
 # UTILITY FUNCTIONS
 

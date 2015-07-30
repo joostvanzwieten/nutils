@@ -17,7 +17,7 @@ mesh writers are provided at this point; output is handled by the
 
 from __future__ import print_function, division
 from . import topology, function, util, element, numpy, numeric, transform, log, _
-import os, warnings
+import os, warnings, itertools
 
 # MESH GENERATORS
 
@@ -78,6 +78,107 @@ def rectilinear( richshape, periodic=(), name='rect', revolved=False ):
       geom = function.stack([ r * function.cos(theta), y, r * function.sin(theta) ])
     else:
       raise NotImplementedError( 'ndims={}'.format( topo.ndims ) )
+
+  return topo, geom
+
+def multipatch( patches, elems, patchverts=None, name='multipatch' ):
+  '''multipatch rectilinear mesh generator
+
+  Multipatch sphere example:
+
+      # structure:
+      #
+      #   3----7
+      #  /|   /|
+      # 2----6 |     y
+      # | |  | |     |
+      # | 1--|-5     | z
+      # |/   |/      |/
+      # 0----4       *----x
+
+      topo, cube = multipatch(
+        patches=[
+          # the order of the vertices is chosen such that normals point outward
+          [2,3,0,1],
+          [4,5,6,7],
+          [4,6,0,2],
+          [1,3,5,7],
+          [1,5,0,4],
+          [2,6,3,7],
+        ],
+        patchverts=tuple(itertools.product(*([[-1,1]]*3))),
+        elems=10,
+      )
+      sphere = cube/function.sqrt((cube**2).sum(0))
+  '''
+
+  patches = numpy.array( patches )
+  if patches.dtype != int:
+    raise ValueError( '`patches` should be an array of ints.' )
+  if len( patches.shape ) != 2:
+    raise ValueError( '`patches` should be an array with two axes (patches, patch vertices).' )
+
+  # determine topological dimension of patches
+
+  ndims = 0
+  while 2**ndims < patches.shape[1]:
+    ndims += 1
+  if 2**ndims > patches.shape[1]:
+    raise ValueError( 'Only hyperrectangular patches are supported: ' \
+      'number of patch vertices should be a power of two.' )
+
+  # group all common patch edges (and/or boundaries?)
+
+  if not isinstance( elems, int ):
+    raise NotImplementedError
+
+  # create patch topologies, geometries
+
+  if patchverts is not None:
+    patchverts = numpy.array( patchverts )
+    indices = set( patches.flat )
+    if tuple( sorted( indices ) ) != tuple( range( len( indices ) ) ):
+      raise ValueError( 'Patch vertices in `patches` should be numbered consecutively, starting at 0.' )
+    if len( patchverts ) != len( indices ):
+      raise ValueError( 'Number of `patchverts` does not equal number of vertices specified in `patches`.' )
+    if len( patchverts.shape ) != 2:
+      raise ValueError( 'Every patch vertex should be an array of dimension 1.' )
+
+  topos = []
+  coords = []
+  for i, patch in enumerate( patches ):
+    # find shape of patch and local patch coordinates
+    if isinstance( elems, int ):
+      shape = [ elems ] * ndims
+      if patchverts is None:
+        patchcoords = [ numpy.arange(elems+1) ] * ndims
+      else:
+        patchcoords = [ numpy.linspace(0, 1, elems+1) ] * ndims
+    else:
+      raise NotImplementedError
+    # create patch topology
+    topos.append( rectilinear( shape, name='{}{}'.format(name, i) )[0] )
+    # compute patch geometry
+    patchcoords = numeric.meshgrid( *patchcoords ).reshape( ndims, -1 )
+    if patchverts is not None:
+      patchcoords = numpy.array([
+        sum(
+          patchverts[j]*util.product(c if s else 1-c for c, s in zip(coord, side))
+          for j, side in zip(patch, itertools.product(*[[0,1]]*ndims))
+        )
+        for coord in patchcoords.T
+      ]).T
+    coords.append( patchcoords )
+
+  # build patch boundary data
+
+  boundarydata = topology.MultipatchTopology.build_boundarydata( patch.reshape( (2,)*ndims ) for patch in patches )
+
+  # join patch topologies, geometries
+
+  topo = topology.MultipatchTopology( zip( topos, boundarydata ) )
+  funcsp = topo.splinefunc( degree=1, patchcontinuous=False )
+  geom = ( funcsp * numpy.concatenate( coords, axis=1 ) ).sum( -1 )
 
   return topo, geom
 
