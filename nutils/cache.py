@@ -12,7 +12,10 @@ The cache module.
 
 from __future__ import print_function, division
 from . import core, log, rational
-import os, sys, weakref, numpy, functools
+import os, sys, weakref, numpy, functools, collections
+
+if sys.version_info.major >= 3:
+  import collections.abc
 
 
 _property = property
@@ -73,9 +76,21 @@ class HashableList( tuple ):
   def __new__( cls, L ):
     return tuple.__new__( cls, map( _hashable, L ) )
 
+def _dictitemiter( D ):
+  if sys.version_info.major == 2:
+    if isinstance( D, collections.Mapping ):
+      return D.iteritems()
+    else:
+      return D
+  else:
+    if isinstance( D, collections.abc.Mapping ):
+      return D.items()
+    else:
+      return D
+
 class HashableDict( frozenset ):
   def __new__( cls, D ):
-    return frozenset.__new__( cls, map( _hashable, D.items() ) )
+    return frozenset.__new__( cls, map( _hashable, _dictitemiter( D ) ) )
 
 class HashableAny( object ):
   def __init__( self, obj ):
@@ -186,6 +201,9 @@ class CallDict( object ):
     return self.wrappercache.stats
 
 class ImmutableMeta( type ):
+  def __new__( cls, name, bases, classdict ):
+    cls._newargs = name, bases, classdict
+    return type.__new__( cls, name, bases, classdict )
   def __init__( cls, *args, **kwargs ):
     type.__init__( cls, *args, **kwargs )
     cls.cache = weakref.WeakValueDictionary()
@@ -197,6 +215,8 @@ class ImmutableMeta( type ):
       self = type.__call__( cls, *args, **kwargs )
       cls.cache[key] = self
     return self
+  def __getnewargs__( self ):
+    return self._newargs
 
 try: # for python 2/3 compatibility
   exec( 'class Immutable( object, metaclass=ImmutableMeta ): pass' )
@@ -219,7 +239,6 @@ def immutable_str( self ):
     s = '{}({})'.format( self.__class__.__name__, ','.join( str(arg) for arg in args ) )
   return s
 
-Immutable.__reduce__ = lambda self: ( self.__class__, findargs(self) )
 Immutable.__str__ = immutable_str
 
 class FileCache( object ):
