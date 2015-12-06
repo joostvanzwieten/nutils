@@ -204,39 +204,55 @@ class CallDict( object ):
 class ImmutableMeta( type ):
   def __init__( cls, *args, **kwargs ):
     type.__init__( cls, *args, **kwargs )
+    cls.__immutable_orig_init__ = cls.__init__
+    cls.__init__ = cls.wrap_init()
     cls.cache = weakref.WeakValueDictionary()
-  def __call__( cls, *args, **kwargs ):
-    key = _keyfromargs( cls.__init__, args, kwargs, 1 )
+  def wrap_init( cls ):
+    def wrapper( *args, **kwargs ):
+      self = args[0]
+      if not hasattr( self, '_immutable_init_state' ):
+        self._immutable_init_state = 'running'
+        cls.__immutable_orig_init__( *args, **kwargs )
+        self._immutable_init_state = 'done'
+      elif self._immutable_init_state == 'running':
+        cls.__immutable_orig_init__( *args, **kwargs )
+    return wrapper
+
+try: # for python 2/3 compatibility
+  exec( 'class ImmutableBase( object, metaclass=ImmutableMeta ): pass' )
+except SyntaxError:
+  class ImmutableBase( object ):
+    __metaclass__ = ImmutableMeta
+
+class Immutable( ImmutableBase ):
+
+  def __new__( *args, **kwargs ):
+    cls = args[0]
+    args = args[1:]
+    key = _keyfromargs( cls.__immutable_orig_init__, args, kwargs, 1 )
     try:
       self = cls.cache[key]
+      assert self.__class__ == cls
     except KeyError:
-      self = type.__call__( cls, *args, **kwargs )
+      i = cls.__mro__.index(Immutable)
+      self = super( Immutable, cls ).__new__(cls)
       cls.cache[key] = self
     return self
 
-try: # for python 2/3 compatibility
-  exec( 'class Immutable( object, metaclass=ImmutableMeta ): pass' )
-except SyntaxError:
-  class Immutable( object ):
-    __metaclass__ = ImmutableMeta
+  def __getnewargs__( self ):
+    for args, obj in self.__class__.cache.items():
+      if obj is self:
+        return tuple( arg._orig if isinstance( arg, HashableBase ) else arg for arg in args )
+    raise ValueError( 'object missing from cache' )
 
-def findargs( self ):
-  for args, obj in self.__class__.cache.items():
-    if obj is self:
-      return tuple( arg._orig if isinstance( arg, HashableBase ) else arg for arg in args )
-  raise ValueError( 'object missing from cache' )
-
-def immutable_str( self ):
-  try:
-    args = findargs(self)
-  except ValueError:
-    s = str( type(self) )
-  else:
-    s = '{}({})'.format( self.__class__.__name__, ','.join( str(arg) for arg in args ) )
-  return s
-
-Immutable.__getnewargs__ = findargs
-Immutable.__str__ = immutable_str
+  def __str__( self ):
+    try:
+      args = self.__getnewargs__(self)
+    except ValueError:
+      s = str( type(self) )
+    else:
+      s = '{}({})'.format( self.__class__.__name__, ','.join( str(arg) for arg in args ) )
+    return s
 
 class FileCache( object ):
   'cache'
