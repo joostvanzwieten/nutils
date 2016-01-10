@@ -1464,7 +1464,14 @@ class MultipatchTopology( Topology ):
     commonboundarydofs = {}
     for topo, boundaries in self.patches:
       # build structured spline basis on patch `topo`
-      patchfuncmap, patchdofmap, patchdofcount = topo._basis_spline( degree )
+      if patchcontinuous == 'C1':
+        # TODO: don't remove dofs for real boundaries
+        removedofs = [[0,-1]]*self.ndims
+        neumann = tuple(range(2*self.ndims))
+      else:
+        removedofs = None
+        neumann = ()
+      patchfuncmap, patchdofmap, patchdofcount = topo._basis_spline( degree, removedofs=removedofs, neumann=neumann )
       funcmap.update( patchfuncmap )
       # renumber dofs
       dofmap.update( (trans,dofs+dofcount) for trans, dofs in patchdofmap.items() )
