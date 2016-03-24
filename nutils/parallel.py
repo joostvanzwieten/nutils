@@ -149,7 +149,10 @@ def fork( func, nice=19 ):
 def shzeros( shape, dtype=float ):
   'create zero-initialized array in shared memory'
 
-  # return numpy.zeros( shape, dtype=dtype ) # TODO: toggle to numpy for debugging
+  nprocs = core.getprop( 'nprocs', 1 )
+  if nprocs == 1:
+    return numpy.zeros( shape, dtype=dtype ) # TODO: toggle to numpy for debugging
+
   if numeric.isint( shape ):
     shape = shape,
   else:
