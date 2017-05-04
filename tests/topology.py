@@ -434,6 +434,17 @@ def multipatch_L():
     numpy.testing.assert_array_almost_equal( coeffs, numpy.ones( coeffs.shape ) )
 
   @unittest
+  def nonuniform_spline_basis():
+    knots_01 = 0, 0.25, 0.5, 0.75, 1
+    mults_01 = 3, 1, 2, 1, 3
+    knots_12 = 0, 0.2, 0.4, 0.6, 1
+    knotvalues = {None: None, (1,2): knots_12, (5,4): knots_12[::-1], (0,1): knots_01, (3,4): knots_01, (6,7): knots_01}
+    knotmultiplicities = {None: None, (0,1): mults_01, (4,3): mults_01[::-1], (6,7): mults_01}
+    basis = domain.basis( 'spline', degree=2, knotvalues=knotvalues, knotmultiplicities=knotmultiplicities )
+    coeffs = domain.project( 1, onto=basis, geometry=geom, ischeme='gauss4' )
+    numpy.testing.assert_array_almost_equal( coeffs, numpy.ones( coeffs.shape ) )
+
+  @unittest
   def discont_basis():
     basis = domain.basis( 'discont', degree=2 )
     coeffs = domain.project( 1, onto=basis, geometry=geom, ischeme='gauss4' )
