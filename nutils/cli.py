@@ -13,7 +13,7 @@ python function based arguments specified on the command line.
 """
 
 from . import log, core, version
-import sys, inspect, os, datetime, argparse, pdb, signal, subprocess, pathlib, contextlib, urllib.parse
+import sys, inspect, os, datetime, argparse, pdb, signal, subprocess, pathlib, contextlib, urllib.parse, traceback, importlib
 
 def _version():
   try:
@@ -212,9 +212,22 @@ def call( func, **kwargs ):
         log.info( 'finish {}'.format( endtime.ctime() ) )
         log.info( 'elapsed {:.0f}:{:02.0f}:{:02.0f}'.format( hours, minutes, seconds ) )
 
+        for k in core.getprop('send_status_integrations', None) or ():
+          try:
+            mod = importlib.import_module('nutils_integration_'+k)
+            mod.nutils_send_status(scriptname, log_url, 'finished in {hours:.0f}:{minutes:02.0f}:{seconds:02.0f}'.format(hours=hours, minutes=minutes, seconds=seconds))
+          except:
+            traceback.print_exc()
+
     except (KeyboardInterrupt,SystemExit,pdb.bdb.BdbQuit):
       return 1
     except:
+      for k in core.getprop('send_status_integrations', None) or ():
+        try:
+          mod = importlib.import_module('nutils_integration_'+k)
+          mod.nutils_send_status(scriptname, log_url, 'failed')
+        except:
+          traceback.print_exc()
       if core.getprop( 'pdb', False ):
         try:
           del __log__

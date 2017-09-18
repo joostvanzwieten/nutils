@@ -63,6 +63,8 @@ def runtests():
 
   args = sys.argv[1:] # command line arguments
 
+  __send_status_integrations__ = ()
+
   if 'coverage' in sys.argv[0]:
     # coverage passes the complete commandline to `sys.argv`
     # find '-m tests' and keep the tail
