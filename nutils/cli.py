@@ -13,7 +13,7 @@ python function based arguments specified on the command line.
 """
 
 from . import log, core, version
-import sys, inspect, os, datetime, argparse, pdb, signal, subprocess, pathlib, contextlib
+import sys, inspect, os, datetime, argparse, pdb, signal, subprocess, pathlib, contextlib, urllib.parse
 
 def _version():
   try:
@@ -167,6 +167,20 @@ def call( func, **kwargs ):
           print( '</head></html>', file=redirlog )
 
     scriptname = core.getprop( 'scriptname' )
+
+    log_url_prefix = core.getprop('log_url_prefix', None)
+    if htmloutput and log_url_prefix:
+      reloutdir = os.path.relpath(os.path.abspath(outdir), os.path.abspath(core.getprop('outrootdir')))
+      if reloutdir.startswith(os.pardir):
+        log_url = None
+      else:
+        log_url = list(urllib.parse.urlsplit(log_url_prefix))
+        log_url[2] = urllib.parse.quote('/'.join((log_url[2].rstrip('/'), *reloutdir.split(os.sep), 'log.html')))
+        log_url = urllib.parse.urlunsplit(log_url)
+        print('log available at {}'.format(log_url))
+        print()
+    else:
+      log_url = None
 
     __log__ = log._mklog() if not htmloutput \
          else log.TeeLog( log._mklog(), log.HtmlLog( 'log.html', title=scriptname, scriptname=scriptname ) )
