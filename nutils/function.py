@@ -78,13 +78,16 @@ asshape = types.tuple[as_canonical_length]
 class Evaluable(types.Singleton):
   'Base class'
 
-  __slots__ = '__args',
+  __slots__ = '__args', '__cached_values', '__benchmark', '__check', '__changed', '__ncalls'
   __cache__ = 'dependencies', 'ordereddeps', 'dependencytree', 'simplified'
+  __empty = object()
 
   @types.apply_annotations
   def __init__(self, args:types.tuple[strictevaluable]):
     super().__init__()
     self.__args = args
+    self.__cached_values = None
+    self.__ncalls = 0
 
   def evalf(self, *args):
     raise NotImplementedError('Evaluable derivatives should implement the evalf method')
@@ -153,8 +156,24 @@ class Evaluable(types.Singleton):
     return self.__class__.__name__
 
   def eval(self, **evalargs):
-    values = [evalargs]
-    for op, indices in self.serialized:
+    if self.__cached_values is None:
+      nops = len(tuple(self.serialized))+1
+      self.__cached_values = [self.__empty]*nops
+      self.__benchmark = 100
+      self.__check = numpy.zeros(nops, dtype=int)
+      self.__changed = numpy.zeros(nops, dtype=int)
+    values = self.__cached_values
+    values[0] = evalargs
+    changed = numpy.zeros(len(self.__changed), dtype=bool)
+    changed[0] = True
+    check = self.__check
+
+    benchmark = self.__benchmark
+    self.__benchmark = builtins.max(0, self.__benchmark-1)
+
+    for iop, (op, indices) in enumerate(self.serialized, 1):
+      if not changed[indices,].any() and values[iop] is not self.__empty:
+        continue
       try:
         args = [values[i] for i in indices]
         retval = op.evalf(*args)
@@ -164,7 +183,26 @@ class Evaluable(types.Singleton):
         etype, evalue, traceback = sys.exc_info()
         excargs = etype, evalue, self, values
         raise EvaluationError(*excargs).with_traceback(traceback)
-      values.append(retval)
+      if benchmark:
+        if isinstance(retval, (types.frozenarray, int, float)) and values[iop] == retval:
+          check[iop] += 1
+          continue
+      elif check[iop]:
+        if values[iop] == retval:
+          continue
+      values[iop] = retval
+      changed[iop] = True
+
+    if benchmark == 1:
+      self.__check = check >= 10
+      self.__ncalls = 1
+      self.__changed += changed
+      #print('done benchmarking, checking {}/{} ops'.format(self.__check.sum(), len(self.__check)))
+    elif not benchmark:
+      self.__ncalls += 1
+      self.__changed += changed
+      #print('changed: {}/{}'.format(changed.sum(), len(changed)))
+
     return values[-1]
 
   @log.title
@@ -180,7 +218,11 @@ class Evaluable(types.Singleton):
     lines = []
     lines.append('digraph {')
     lines.append('graph [dpi=72];')
-    lines.extend('{0:} [label="{0:}. {1:}"];'.format(i, name._asciitree_str()) for i, name in enumerate(self.ordereddeps+(self,)))
+    if self.__ncalls:
+      for i, name in enumerate(self.ordereddeps+(self,)):
+        lines.append('{0:} [label="{0:}. {1:}\\ncache eff.: {3:.1f}%"{2}];'.format(i, name._asciitree_str(), ', shape=box' if self.__check[i] else '', 100*(self.__ncalls-self.__changed[i])/self.__ncalls))
+    else:
+      lines.extend('{0:} [label="{0:}. {1:}"];'.format(i, name._asciitree_str()) for i, name in enumerate(self.ordereddeps+(self,)))
     lines.extend('{} -> {};'.format(j, i) for i, indices in enumerate(self.dependencytree) for j in indices)
     lines.append('}')
     imgdata = '\n'.join(lines).encode()
@@ -996,7 +1038,7 @@ class ApplyTransforms(Array):
     super().__init__(args=[points, trans], shape=[trans.todims], dtype=float)
 
   def evalf(self, points, chain):
-    return transform.apply(chain, points)
+    return types.frozenarray(transform.apply(chain, points))
 
   def _derivative(self, var, seen):
     if isinstance(var, LocalCoords) and len(var) > 0:
@@ -1014,7 +1056,7 @@ class LinearFrom(Array):
   def evalf(self, chain):
     todims, fromdims = self.shape
     assert not chain or chain[0].todims == todims
-    return transform.linearfrom(chain, fromdims)[_]
+    return types.frozenarray(transform.linearfrom(chain, fromdims)[_], copy=False)
 
   def _derivative(self, var, seen):
     return zeros(self.shape+var.shape)
@@ -1334,7 +1376,7 @@ class Multiply(Array):
     return Multiply([func1, func2])
 
   def evalf(self, arr1, arr2):
-    return arr1 * arr2
+    return types.frozenarray(arr1 * arr2, copy=False)
 
   def _sum(self, axis):
     func1, func2 = self.funcs
@@ -1428,7 +1470,7 @@ class Add(Array):
     return Add([func1, func2])
 
   def evalf(self, arr1, arr2=None):
-    return arr1 + arr2
+    return types.frozenarray(arr1 + arr2, copy=False)
 
   def _sum(self, axis):
     return Add([Sum(func, axis) for func in self.funcs])
@@ -1583,7 +1625,7 @@ class Dot(Array):
     return Dot([func1, func2], self.axes)
 
   def evalf(self, arr1, arr2):
-    return numpy.einsum(self._einsumfmt, arr1, arr2, optimize=False)
+    return types.frozenarray(numpy.einsum(self._einsumfmt, arr1, arr2, optimize=False), copy=False)
 
   def _get(self, axis, item):
     func1, func2 = self.funcs
@@ -1641,7 +1683,7 @@ class Sum(Array):
 
   def evalf(self, arr):
     assert arr.ndim == self.ndim+2
-    return numpy.sum(arr, self.axis+1)
+    return types.frozenarray(numpy.sum(arr, self.axis+1), copy=False)
 
   def _sum(self, axis):
     trysum = self.func._sum(axis+(axis>=self.axis))
@@ -1952,7 +1994,7 @@ class Sign(Array):
 
   def evalf(self, arr):
     assert arr.ndim == self.ndim+1
-    return numpy.sign(arr)
+    return types.frozenarray(numpy.sign(arr), copy=False)
 
   def _derivative(self, var, seen):
     return zeros(self.shape + var.shape)
@@ -2625,7 +2667,7 @@ class Argument(DerivativeTargetBase):
       raise ValueError('argument {!r} missing'.format(self._name))
     else:
       assert numeric.isarray(value) and value.shape == self.shape
-      return value[_]
+      return types.frozenarray(value[_])
 
   def _derivative(self, var, seen):
     if isinstance(var, Argument) and var._name == self._name:
@@ -2885,7 +2927,7 @@ class FindTransform(Array):
     index -= 1
     if index < 0 or trans[:len(self.transforms[index])] != self.transforms[index]:
       raise IndexError('trans not found')
-    return numpy.array(index)[_]
+    return types.frozenarray(numpy.array(index)[_], copy=False)
 
 class Range(Array):
 
@@ -2940,15 +2982,15 @@ class Polyval(Array):
     self.coeffs = coeffs
     self.points = points
     self.ngrad = ngrad
-    super().__init__(args=[CACHE, points, coeffs], shape=coeffs.shape[:ndim]+(self.points_ndim,)*ngrad, dtype=float)
+    super().__init__(args=[points, coeffs], shape=coeffs.shape[:ndim]+(self.points_ndim,)*ngrad, dtype=float)
 
-  def evalf(self, cache, points, coeffs):
+  def evalf(self, points, coeffs):
     assert points.shape[1] == self.points_ndim
     points = types.frozenarray(points)
     coeffs = types.frozenarray(coeffs)
     for igrad in range(self.ngrad):
-      coeffs = cache[numeric.poly_grad](coeffs, self.points_ndim)
-    return cache[numeric.poly_eval](coeffs, points)
+      coeffs = numeric.poly_grad(coeffs, self.points_ndim)
+    return numeric.poly_eval(coeffs, points)
 
   def _derivative(self, var, seen):
     # Derivative to argument `points`.

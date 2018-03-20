@@ -262,9 +262,6 @@ class Topology(types.Singleton):
     log.debug('integrating {} distinct blocks'.format('+'.join(
       str(block2func.count(ifunc)) for ifunc in range(len(funcs)))))
 
-    if config.dot:
-      function.Tuple(values).graphviz()
-
     if fcache is None:
       fcache = cache.WrapperCache()
 
@@ -319,6 +316,9 @@ class Topology(types.Singleton):
           si = si[:-1]
 
     log.debug('cache', fcache.stats)
+
+    if config.dot:
+      valueindexfunc.graphviz()
 
     return data_index
 
