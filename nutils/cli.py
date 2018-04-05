@@ -189,7 +189,7 @@ def call(func, kwargs, scriptname, funcname=None):
       log_ = log.TeeLog(log_, log.HtmlLog('log.html', title=scriptname, scriptname=scriptname, funcname=funcname, funcargs=funcargs))
 
     try:
-      with log_, warnings.via(log.warning), matrix.backend(config.matrix), cache.enable(config.cachedir) if config.cache else cache.disable():
+      with log.use(log_), warnings.via(log.warning), matrix.backend(config.matrix), cache.enable(config.cachedir) if config.cache else cache.disable():
 
         log.info('nutils v{}'.format(_version()))
         log.info('start {}'.format(starttime.ctime()))

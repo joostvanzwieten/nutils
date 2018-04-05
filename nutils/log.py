@@ -24,7 +24,8 @@ The log module provides print methods ``debug``, ``info``, ``user``,
 stdout as well as to an html formatted log file if so configured.
 """
 
-import time, functools, itertools, re, abc, contextlib, html, urllib.parse, os, json, traceback, bdb, inspect, textwrap, builtins
+import time, functools, itertools, re, abc, contextlib, html, urllib.parse, os, json, traceback, bdb, inspect, textwrap, builtins, sys
+from types import ModuleType
 from . import core, config, warnings
 
 # NOTE: This should match the log levels defined in `nutils/_log/viewer.js`.
@@ -40,30 +41,11 @@ class Log( metaclass=abc.ABCMeta ):
   :meth:`write` method.
   '''
 
-  def __enter__( self ):
-    if hasattr(self, '_old_log'):
-      raise RuntimeError('This context manager is not reentrant.')
-    # Replace the current log object with `self` and remember the old instance.
-    global _current_log
-    self._old_log = _current_log
-    _current_log = self
+  def __enter__(self):
     return self
 
-  def __exit__( self, etype, value, tb ):
-    if not hasattr(self, '_old_log'):
-      raise RuntimeError('This context manager is not yet entered.')
-    if etype in (KeyboardInterrupt,SystemExit,bdb.BdbQuit):
-      self.write( 'error', 'killed by user' )
-    elif etype is not None:
-      try:
-        msg = ''.join(traceback.format_exception(etype, value, tb))
-      except Exception as e:
-        msg = '{} (traceback failed: {})'.format(value, e)
-      self.write('error', msg)
-    # Restore the old log instance.
-    global _current_log
-    _current_log = self._old_log
-    del self._old_log
+  def __exit__(self, etype, value, tb):
+    pass
 
   @abc.abstractmethod
   def context( self, title ):
@@ -78,6 +60,70 @@ class Log( metaclass=abc.ABCMeta ):
 
     .. Note:: This function is abstract.
     '''
+
+  def _gen_print(level):
+    def p(self, *args):
+      self.write(level, ' '.join(map(str, args)))
+    p.__name__ = level
+    return p
+  for level in LEVELS:
+    locals()[level] = _gen_print(level)
+  del _gen_print
+
+  def range(self, title, *args):
+    '''Progress logger identical to built in range'''
+
+    items = builtins.range(*args)
+    for index, item in builtins.enumerate(items):
+      with self.context('{} {} ({:.0f}%)'.format(title, item, index*100/len(items))):
+        yield item
+
+  def iter(self, title, iterable, length=None):
+    '''Progress logger identical to built in iter'''
+
+    if length is None:
+      length = _len(iterable)
+    it = builtins.iter(iterable)
+    for index in itertools.count():
+      text = '{} {}'.format(title, index)
+      if length:
+        text += ' ({:.0f}%)'.format(100 * index / length)
+      with self.context(text):
+        try:
+          yield next(it)
+        except StopIteration:
+          break
+
+  def enumerate(self, title, iterable):
+    '''Progress logger identical to built in enumerate'''
+
+    return self.iter(title, builtins.enumerate(iterable), length=_len(iterable))
+
+  def zip(self, title, *iterables):
+    '''Progress logger identical to built in enumerate'''
+
+    lengths = [_len(iterable) for iterable in iterables]
+    return self.iter(title, builtins.zip(*iterables), length=all(lengths) and min(lengths))
+
+  def count(self, title, start=0, step=1):
+    '''Progress logger identical to itertools.count'''
+
+    for item in itertools.count(start,step):
+      with self.context('{} {}'.format(title, item)):
+        yield item
+
+class LogTraceback(Log):
+
+  def __exit__(self, etype, value, tb):
+    if etype in (KeyboardInterrupt,SystemExit,bdb.BdbQuit):
+      self.write( 'error', 'killed by user' )
+    elif etype is not None:
+      try:
+        msg = ''.join(traceback.format_exception(etype, value, tb))
+      except Exception as e:
+        msg = '{} (traceback failed: {})'.format(value, e)
+      self.write('error', msg)
+    super().__exit__(etype, value, tb)
 
 class ContextLog( Log ):
   '''Base class for loggers that keep track of the current list of contexts.
@@ -172,7 +218,7 @@ class ContextTreeLog( ContextLog ):
     .. Note:: This function is abstract.
     '''
 
-class StdoutLog( ContextLog ):
+class StdoutLog( ContextLog, LogTraceback ):
   '''Output plain text to stream.'''
 
   def __init__(self, stream=None):
@@ -191,7 +237,7 @@ class StdoutLog( ContextLog ):
       s = self._mkstr( level, text )
       print(s, end='\n' if endl else '', file=self.stream)
 
-class RichOutputLog( StdoutLog ):
+class RichOutputLog( StdoutLog, LogTraceback ):
   '''Output rich (colored,unicode) text to stream.'''
 
   # color order: black, red, green, yellow, blue, purple, cyan, white
@@ -260,7 +306,7 @@ class HtmlInsertAnchor( Log ):
     '''
     return re.sub( r'\b\w+([.]\w+)\b', self._path2href, escaped_text )
 
-class HtmlLog( HtmlInsertAnchor, ContextTreeLog ):
+class HtmlLog( HtmlInsertAnchor, ContextTreeLog, LogTraceback ):
   '''Output html nested lists.'''
 
   def __init__(self, file, *, title='nutils', scriptname=None, funcname=None, funcargs=None):
@@ -274,51 +320,55 @@ class HtmlLog( HtmlInsertAnchor, ContextTreeLog ):
     self._scriptname = scriptname
     self._funcname = funcname
     self._funcargs = funcargs
+    self.__entered = 0
     super().__init__()
 
   def __enter__( self ):
-    # Copy dependencies.
-    logpath = os.path.join( os.path.dirname( __file__ ), '_log' )
-    for filename in os.listdir( logpath ):
-      if not filename.startswith( '.' ):
-        with open( os.path.join( logpath, filename ), 'rb' ) as src, core.open_in_outdir( filename, 'wb' ) as dst:
-          dst.write( src.read() )
-    # Write header.
-    if self._file:
-      self._file.__enter__()
-    self._print('<!DOCTYPE html>')
-    self._print('<html><head>')
-    self._print('<meta charset="UTF-8"/>')
-    self._print('<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"/>')
-    self._print('<title>{}</title>'.format(html.escape(self._title)))
-    self._print('<script src="viewer.js"></script>')
-    self._print('<link rel="stylesheet" type="text/css" href="viewer.css"/>')
-    self._print('<link rel="icon" sizes="48x48" type="image/png" href="favicon.png"/>')
-    body_attrs = ['body']
-    if self._scriptname:
-      body_attrs.append('data-scriptname="{}"'.format(html.escape(self._scriptname)))
-      body_attrs.append('data-latest="../../../../log.html"')
-    if self._funcname:
-      body_attrs.append('data-funcname="{}"'.format(html.escape(self._funcname)))
-    self._print('</head><{}>'.format(' '.join(body_attrs)))
-    self._print('<div id="log">')
-    if self._funcargs:
-      self._print('<ul class="cmdline">')
-      for name, value, annotation in self._funcargs:
-        self._print(('  <li>{}={}<span class="annotation">{}</span></li>' if annotation else '<li>{}={}</li>').format(*(html.escape(str(v)) for v in (name, value, annotation))))
-      self._print('</ul>')
-    super().__enter__()
-    return self
+    if not self.__entered:
+      # Copy dependencies.
+      logpath = os.path.join( os.path.dirname( __file__ ), '_log' )
+      for filename in os.listdir( logpath ):
+        if not filename.startswith( '.' ):
+          with open( os.path.join( logpath, filename ), 'rb' ) as src, core.open_in_outdir( filename, 'wb' ) as dst:
+            dst.write( src.read() )
+      # Write header.
+      if self._file:
+        self._file.__enter__()
+      self._print('<!DOCTYPE html>')
+      self._print('<html><head>')
+      self._print('<meta charset="UTF-8"/>')
+      self._print('<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"/>')
+      self._print('<title>{}</title>'.format(html.escape(self._title)))
+      self._print('<script src="viewer.js"></script>')
+      self._print('<link rel="stylesheet" type="text/css" href="viewer.css"/>')
+      self._print('<link rel="icon" sizes="48x48" type="image/png" href="favicon.png"/>')
+      body_attrs = ['body']
+      if self._scriptname:
+        body_attrs.append('data-scriptname="{}"'.format(html.escape(self._scriptname)))
+        body_attrs.append('data-latest="../../../../log.html"')
+      if self._funcname:
+        body_attrs.append('data-funcname="{}"'.format(html.escape(self._funcname)))
+      self._print('</head><{}>'.format(' '.join(body_attrs)))
+      self._print('<div id="log">')
+      if self._funcargs:
+        self._print('<ul class="cmdline">')
+        for name, value, annotation in self._funcargs:
+          self._print(('  <li>{}={}<span class="annotation">{}</span></li>' if annotation else '<li>{}={}</li>').format(*(html.escape(str(v)) for v in (name, value, annotation))))
+        self._print('</ul>')
+    self.__entered += 1
+    return super().__enter__()
 
   def __exit__( self, etype, value, tb ):
     super().__exit__( etype, value, tb )
-    if etype not in (None,KeyboardInterrupt,SystemExit,bdb.BdbQuit):
-      self.write_post_mortem( etype, value, tb )
-    self._print('</div>') # id="log"
-    # Write footer.
-    self._print('</body></html>')
-    if self._file:
-      self._file.__exit__( etype, value, tb )
+    self.__entered -= 1
+    if not self.__entered:
+      if etype not in (None,KeyboardInterrupt,SystemExit,bdb.BdbQuit):
+        self.write_post_mortem( etype, value, tb )
+      self._print('</div>') # id="log"
+      # Write footer.
+      self._print('</body></html>')
+      if self._file:
+        self._file.__exit__( etype, value, tb )
 
   def write( self, level, text ):
     '''Write ``text`` with log level ``level`` to the log.
@@ -360,7 +410,7 @@ class HtmlLog( HtmlInsertAnchor, ContextTreeLog ):
     self._print('</div>')
     self._flush()
 
-class IndentLog( HtmlInsertAnchor, ContextTreeLog ):
+class IndentLog( HtmlInsertAnchor, ContextTreeLog, LogTraceback ):
   '''Output indented html snippets.'''
 
   def __init__( self, file, *, progressfile=None, progressinterval=None ):
@@ -428,8 +478,7 @@ class TeeLog( Log ):
     self._stack.__enter__()
     for log in self.logs:
       self._stack.enter_context( log )
-    super().__enter__()
-    return self
+    return super().__enter__()
 
   def __exit__( self, *exc_info ):
     super().__exit__(*exc_info)
@@ -475,7 +524,7 @@ class RecordLog(Log):
      :meth:`nutils.parallel.pariter`) are not recorded.
   '''
 
-  def __init__(self):
+  def __init__(self, writeback=None):
     # Replayable log messages.  Each entry is a tuple of `(cmd, *args)`, where
     # `cmd` is either 'entercontext', 'exitcontext' or 'write'.  See
     # `self.replay` below.
@@ -487,6 +536,7 @@ class RecordLog(Log):
     # contexts that we have appended to `self._messages`.
     self._contexts = []
     self._appended_contexts = 0
+    self._writeback = writeback
     super().__init__()
 
   @contextlib.contextmanager
@@ -494,7 +544,10 @@ class RecordLog(Log):
     self._contexts.append(title)
     # We don't append 'entercontext' here.  See `self.__init__`.
     try:
-      with self._old_log.context(title):
+      if self._writeback:
+        with self._writeback.context(title):
+          yield
+      else:
         yield
     finally:
       self._contexts.pop()
@@ -503,7 +556,8 @@ class RecordLog(Log):
         self._messages.append(('exitcontext',))
 
   def write(self, level, text):
-    self._old_log.write(level, text)
+    if self._writeback:
+      self._writeback.write(level, text)
     from . import parallel
     if not parallel.procid:
       # Append all currently entered contexts that have not been append yet
@@ -520,23 +574,16 @@ class RecordLog(Log):
     contexts = []
     for cmd, *args in self._messages:
       if cmd == 'entercontext':
-        context = _current_log.context(*args)
+        context = current.context(*args)
         context.__enter__()
         contexts.append(context)
       elif cmd == 'exitcontext':
         contexts.pop().__exit__(None, None, None)
       elif cmd == 'write':
-        _current_log.write(*args)
+        current.write(*args)
 
 
 ## INTERNAL FUNCTIONS
-
-# Reference to the current log instance.  This is updated by the `Log`'s
-# context manager, see `Log` base class.
-_current_log = None
-
-# Set a default log instance.
-StdoutLog().__enter__()
 
 def _len( iterable ):
   '''Return length if available, otherwise None'''
@@ -546,59 +593,7 @@ def _len( iterable ):
   except:
     return None
 
-def _print( level, *args ):
-  return _current_log.write( level, ' '.join( str(arg) for arg in args ) )
-
-
 ## MODULE-ONLY METHODS
-
-locals().update({ name: functools.partial( _print, name ) for name in LEVELS })
-
-def path( *args ):
-  warnings.deprecation("log level 'path' will be removed in the future, please use any other log level instead")
-  return _print( 'info', *args )
-
-def range( title, *args ):
-  '''Progress logger identical to built in range'''
-
-  items = builtins.range(*args)
-  for index, item in builtins.enumerate(items):
-    with _current_log.context('{} {} ({:.0f}%)'.format(title, item, index*100/len(items))):
-      yield item
-
-def iter( title, iterable, length=None ):
-  '''Progress logger identical to built in iter'''
-
-  if length is None:
-    length = _len(iterable)
-  it = builtins.iter(iterable)
-  for index in itertools.count():
-    text = '{} {}'.format( title, index )
-    if length:
-      text += ' ({:.0f}%)'.format( 100 * index / length )
-    with _current_log.context( text ):
-      try:
-        yield next(it)
-      except StopIteration:
-        break
-
-def enumerate( title, iterable ):
-  '''Progress logger identical to built in enumerate'''
-
-  return iter(title, builtins.enumerate(iterable), length=_len(iterable))
-
-def zip( title, *iterables ):
-  '''Progress logger identical to built in enumerate'''
-
-  lengths = [ _len(iterable) for iterable in iterables ]
-  return iter(title, builtins.zip(*iterables), length=all(lengths) and min(lengths))
-
-def count( title, start=0, step=1 ):
-  '''Progress logger identical to itertools.count'''
-
-  for item in itertools.count(start,step):
-    with _current_log.context( '{} {}'.format( title, item ) ):
-      yield item
 
 def title( f ): # decorator
   '''Decorator, adds title argument with default value equal to the name of the
@@ -617,12 +612,31 @@ def title( f ): # decorator
     gettitle = lambda args, kwargs: kwargs.pop('title',default)
   @functools.wraps(f)
   def wrapped( *args, **kwargs ):
-    with _current_log.context( gettitle(args,kwargs) ):
+    with current.context( gettitle(args,kwargs) ):
       return f( *args, **kwargs )
   return wrapped
 
-def context( title ):
-  return _current_log.context( title )
 
+
+# Reference to the current log instance.  This is updated by the `Log`'s
+# context manager, see `Log` base class.
+current = StdoutLog().__enter__()
+
+class LogModule(ModuleType):
+
+  def __getattr__(self, name):
+    return getattr(self.current, name)
+
+  @contextlib.contextmanager
+  def use(self, log):
+    old = self.current
+    with log:
+      try:
+        self.current = log
+        yield log
+      finally:
+        self.current = old
+
+sys.modules[__name__].__class__ = LogModule
 
 # vim:shiftwidth=2:softtabstop=2:expandtab:foldmethod=indent:foldnestmax=2

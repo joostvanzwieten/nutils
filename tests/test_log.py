@@ -190,7 +190,7 @@ class logoutput(ContextTestCase):
         log_ = self.logcls(**kwargs)
       else:
         log_ = self.logcls(stream, **kwargs)
-      stack.enter_context(log_)
+      stack.enter_context(nutils.log.use(log_))
       generate_log()
     self.assertEqual(stream.getvalue(), self.logout)
 
@@ -217,7 +217,7 @@ class tee_stdout_html(ContextTestCase):
   def test(self):
     stream_stdout = io.StringIO()
     stream_html = io.StringIO()
-    with nutils.log.TeeLog(nutils.log.StdoutLog(stream_stdout), nutils.log.HtmlLog(stream_html, title='test')):
+    with nutils.log.use(nutils.log.TeeLog(nutils.log.StdoutLog(stream_stdout), nutils.log.HtmlLog(stream_html, title='test'))):
       generate_log()
     self.assertEqual(stream_stdout.getvalue(), log_stdout)
     self.assertEqual(stream_html.getvalue(), log_html)
@@ -234,12 +234,12 @@ class recordlog(ContextTestCase):
 
   def test(self):
     stream_passthrough_stdout = io.StringIO()
-    with nutils.log.StdoutLog(stream_passthrough_stdout), nutils.log.RecordLog() as record:
+    with nutils.log.StdoutLog(stream_passthrough_stdout) as log_stdout, nutils.log.use(nutils.log.RecordLog(log_stdout)) as record:
       generate_log(short=True)
     with self.subTest('pass-through'):
       self.assertEqual(stream_passthrough_stdout.getvalue(), log_stdout_short)
     stream_replay_stdout = io.StringIO()
-    with nutils.log.StdoutLog(stream_replay_stdout):
+    with nutils.log.use(nutils.log.StdoutLog(stream_replay_stdout)):
       record.replay()
     with self.subTest('replay'):
       self.assertEqual(stream_replay_stdout.getvalue(), log_stdout_short)
@@ -267,7 +267,7 @@ def generate_exception(level=0):
 ''', virtual_module)
     stream = io.StringIO()
     with self.assertRaises(TestException):
-      with nutils.log.HtmlLog(stream, title='test'):
+      with nutils.log.use(nutils.log.HtmlLog(stream, title='test')):
         virtual_module['generate_exception']()
     self.assertIn('<div class="post-mortem">', stream.getvalue())
 
@@ -290,30 +290,16 @@ class move_outdir(ContextTestCase):
   def test(self):
     os.rename(self.outdira, self.outdirb)
     stream = io.StringIO()
-    with nutils.log.HtmlLog(stream, title='test'):
+    with nutils.log.use(nutils.log.HtmlLog(stream, title='test')):
       generate_log()
     self.assertEqual(stream.getvalue(), log_html)
-
-class log_context_manager(TestCase):
-
-  def test_reenter(self):
-    log = nutils.log.StdoutLog()
-    with log:
-      with self.assertRaises(RuntimeError):
-        with log:
-          pass
-
-  def test_exit_before_enter(self):
-    log = nutils.log.StdoutLog()
-    with self.assertRaises(RuntimeError):
-      log.__exit__(None, None, None)
 
 class log_module_funcs(TestCase):
 
   @contextlib.contextmanager
   def assertLogs(self, desired):
     stream = io.StringIO()
-    with nutils.log.StdoutLog(stream):
+    with nutils.log.use(nutils.log.StdoutLog(stream)):
       yield
     self.assertEqual(stream.getvalue(), desired)
 
