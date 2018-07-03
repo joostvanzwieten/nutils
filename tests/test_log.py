@@ -78,8 +78,8 @@ log_html = '''\
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"/>
 <title>test</title>
-<script src="ec07ff6f8ef5e06450e5076ece49d404de00e3be.js"></script>
-<link rel="stylesheet" type="text/css" href="7eaa783bda20788dc3f5c4bf953fcf73cefc6265.css"/>
+<script src="4fe33a6a8b4737673984ba21617f3ec326358994.js"></script>
+<link rel="stylesheet" type="text/css" href="9255411cac012f5dba093fe5eb30b155d1643d8a.css"/>
 <link rel="icon" sizes="48x48" type="image/png" href="1e8377c360c7a152793d936d03b0ea9e2fcb742b.png"/>
 </head>
 <body>

@@ -390,8 +390,12 @@ class HtmlLog(ContextTreeLog):
 class IndentLog(ContextTreeLog):
   '''Output indented html snippets.'''
 
-  def __init__(self, outdir, *, progressinterval=None):
+  def __init__(self, outdir, *, progressinterval=None, title='nutils', scriptname=None, funcname=None, funcargs=None):
     self._outdir = outdir
+    self._title = title
+    self._scriptname = scriptname
+    self._funcname = funcname
+    self._funcargs = funcargs
     self._prefix = ''
     self._progressupdate = 0 # progress update interval in seconds
     self._progressinterval = progressinterval or getattr(config, 'progressinterval', 1)
@@ -411,10 +415,38 @@ class IndentLog(ContextTreeLog):
 
   def _init_context(self, stack):
     self._open = stack.enter_context(_makedirs(self._outdir, exist_ok=True))
-    self._logfile = stack.enter_context(self._open('log.html', 'w', exists='overwrite'))
+    self._logfile = stack.enter_context(self._open('logdata.txt', 'w', exists='overwrite'))
     self._progressfile = stack.enter_context(self._open('progress.json', 'w', exists='overwrite'))
+    # Copy dependencies.
+    paths = {}
+    for filename in 'favicon.png', 'viewer.css', 'viewer.js':
+      with builtins.open(os.path.join(os.path.dirname(__file__), '_log', filename), 'rb') as src:
+        data = src.read()
+      with self._open(hashlib.sha1(data).hexdigest() + '.' + filename.split('.')[1], 'wb', exists='skip') as dst:
+        dst.write(data)
+      paths[filename.replace('.', '_')] = dst.name
+    with self._open('log.html', 'w', exists='overwrite') as f:
+      print('<!DOCTYPE html>', file=f)
+      print('<html>', file=f)
+      print(HTMLHEAD.format(title=html.escape(self._title), **paths), file=f)
+      body_attrs = [('class', 'indentlogger')]
+      if self._scriptname:
+        body_attrs.append(('data-scriptname', html.escape(self._scriptname)))
+        body_attrs.append(('data-latest', '../../../../log.html'))
+      if self._funcname:
+        body_attrs.append(('data-funcname', html.escape(self._funcname)))
+      print(''.join(['<body'] + [' {}="{}"'.format(*item) for item in body_attrs] + ['></body>']), file=f)
+      print('</html>', file=f)
     stack.push(self._write_post_mortem)
+    stack.push(self._finish_progressfile)
     super()._init_context(stack)
+
+  def _finish_progressfile(self, etype, value, tb):
+    self._progressfile.seek(0)
+    self._progressfile.truncate(0)
+    json.dump(dict(logpos=self._logfile.tell(), state='finished'), self._progressfile)
+    self._progressfile.write('\n')
+    self._progressfile.flush()
 
   def _print(self, *args, flush=False):
     print(*args, file=self._logfile)
@@ -432,11 +464,14 @@ class IndentLog(ContextTreeLog):
   def _print_item(self, level, text, escape=True):
     if escape:
       text = html.escape(text)
-    level = html.escape(level[0])
+    level = linetype = html.escape(level[0])
+    firstline = None
     for line in text.splitlines():
-      self._print('{}{} {}'.format(self._prefix, level, line), flush=True)
-      level = '|'
-    self._print_progress(level, text)
+      if firstline is None:
+        firstline = line
+      self._print('{}{} {}'.format(self._prefix, linetype, line), flush=True)
+      linetype = '|'
+    self._print_progress(level, firstline)
     self._progressupdate = 0
 
   def _push_context(self, title, mayskip):
@@ -453,7 +488,7 @@ class IndentLog(ContextTreeLog):
   def _print_progress(self, level, text):
     self._progressfile.seek(0)
     self._progressfile.truncate(0)
-    json.dump(dict(logpos=self._logfile.tell(), context=self._context, text=text, level=level), self._progressfile)
+    json.dump(dict(logpos=self._logfile.tell(), context=self._context, text=text, level=level, state='running'), self._progressfile)
     self._progressfile.write('\n')
     self._progressfile.flush()
 

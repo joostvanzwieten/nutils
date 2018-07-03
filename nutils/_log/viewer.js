@@ -12,6 +12,8 @@ const create_element = function(tag, options, ...children) {
     else if (k === 'dataset')
       for (name in options[k])
         el.dataset[name] = options[k][name];
+    else if (k === 'innerHTML')
+      el.innerHTML = options[k];
     else
       el.setAttribute(k, options[k]);
   for (const child of children)
@@ -41,6 +43,8 @@ const union_dict = function(...elements) {
     Object.assign(union, elem);
   return union;
 };
+
+const async_sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // ART
 
@@ -268,6 +272,142 @@ const Log = class {
       }
       anchor.scrollIntoView();
       update_state();
+    }
+  }
+};
+
+const IndentLog = class extends Log {
+  constructor() {
+    super();
+    this.root = document.getElementById('log');
+    this._fetched_bytes = 0;
+    this._available_bytes = 0;
+    this._contexts = [];
+    this._ncontexts = 0;
+    this._nanchors = 0;
+  }
+  init_elements(collapsed) {
+    // Make contexts clickable.
+    for (const title of document.querySelectorAll('#log .context > .title'))
+      title.addEventListener('click', this._context_toggle_collapsed);
+  }
+  _parse_line(line) {
+    let i = 0;
+    while (i < this._contexts.length && line[i] == ' ')
+      i += 1;
+    if (i < this._contexts.length)
+      // Close remaining contexts.
+      this._contexts = this._contexts.slice(0, i);
+    const type = line[i];
+    const loglevel = 'ewuid'.indexOf(type);
+    const value = line.slice(i+2);
+    const context = this._contexts.length > 0 ? this._contexts[this._contexts.length-1] : {element: null, children: this.root};
+    if (type == 'c') {
+      const children = create_element('div', {'class': 'children'});
+      const title = create_element('div', {'class': 'title', innerHTML: value, events: {click: this._context_toggle_collapsed}});
+      const element = create_element('div', {'class': 'context', dataset: {id: this._ncontexts}}, title, children);
+      element.dataset.label = (context.element && context.element.dataset.label ? context.element.label + '/' : '') + title.innerText;
+      context.children.appendChild(element);
+      this._contexts.push({element: element, children: children});
+      this._ncontexts += 1;
+    }
+    else if (loglevel >= 0) {
+      const item = create_element('div', {'class': 'item', dataset: {loglevel: loglevel}, innerHTML: value});
+      // Link viewable anchors to theater.
+      for (const anchor of item.querySelectorAll(':scope > a')) {
+        const filename = anchor.innerText;
+        const suffix = VIEWABLE.filter(suffix => filename.endsWith(suffix));
+        if (!suffix.length)
+          continue;
+        const stem = filename.slice(0, filename.length - suffix[0].length);
+        if (!stem)
+          continue;
+        const category = (stem.match(/^(.*?)[0-9]*$/) || [null, null])[1];
+        anchor.addEventListener('click', this._plot_clicked);
+        anchor.id = `plot-${this._nanchors}`;
+        this._nanchors += 1;
+        theater.add_plot(anchor.href, anchor.id, category, (context.element ? context.element.dataset.id : undefined), (context.element && context.element.dataset.label ? context.element.dataset.label + '/' : '') + stem);
+      }
+      context.children.appendChild(item);
+      // Apply log level to parent contexts.
+      // NOTE: `parseInt` returns `NaN` if the `parent` loglevel is undefined
+      // and `NaN < loglevel` is false.
+      for (let i = this._contexts.length-1; i >= 0; i -= 1) {
+        if (parseInt(this._contexts[i].element.dataset.loglevel) <= loglevel)
+          break;
+        this._contexts[i].element.dataset.loglevel = loglevel;
+      }
+    }
+    else if (type == '|') {
+      // TODO
+    }
+    else {
+      // TODO: log something
+    }
+  }
+  async check_progress() {
+    const footer = document.getElementById('footer');
+    const footer_progress = create_element('div');
+    footer.appendChild(footer_progress);
+    while (true) {
+      try {
+        const response = await fetch('progress.json', {cache: 'no-cache'});
+        const data = await response.json();
+        if (data.logpos !== undefined)
+          this._available_bytes = data.logpos;
+        if (data.state == 'finished')
+          break;
+        footer_progress.innerHTML = '';
+        for (const context of data.context) {
+          footer_progress.appendChild(create_element('span', {'class': 'context', innerHTML: context}));
+          footer_progress.appendChild(create_element('span', {'class': 'sep'}, ' • '));
+        }
+        footer_progress.appendChild(create_element('span', {'class': 'text', innerHTML: data.text}));
+      }
+      catch (e) {
+        console.log(`failed to fetch/process progress file: ${e}`);
+      }
+      await async_sleep(1000);
+    }
+    this.finished = true;
+    footer_progress.innerHTML = 'finished';
+  }
+  async update_log() {
+    // TODO: Check support for range request first, see https://developer.mozilla.org/en-US/docs/Web/HTTP/Range_requests
+    let pending_data = '';
+    while (!this.finished || this._fetched_bytes < this._available_bytes) {
+      if (this._fetched_bytes < this._available_bytes) {
+        const response = await fetch('logdata.txt', {cache: 'no-cache', headers: {'Range': `bytes=${this._fetched_bytes}-${this._available_bytes-1}`}});
+        if (response.status == 206 && response.headers.has('content-range') && response.headers.get('content-range').startsWith(`bytes ${this._fetched_bytes}-`)) {
+          const new_fetched_bytes = parseInt(response.headers.get('content-range').split('-')[1])+1;
+          if (new_fetched_bytes <= this._fetched_bytes)
+            throw 'invalid partial response: content range end smaller than requested start';
+          this._fetched_bytes = new_fetched_bytes;
+          pending_data += await response.text();
+          while (true) {
+            const i_newline = pending_data.indexOf('\n');
+            if (i_newline < 0)
+              break;
+            this._parse_line(pending_data.slice(0, i_newline));
+            pending_data = pending_data.slice(i_newline+1);
+          }
+        }
+        else {
+          if (this._fetched_bytes == 0) {
+            let data = await response.text();
+            while (true) {
+              const i_newline = data.indexOf('\n');
+              if (i_newline < 0)
+                break;
+              this._parse_line(data.slice(0, i_newline));
+              data = data.slice(i_newline+1);
+            }
+          }
+          document.getElementById('log').appendChild(create_element('div', {}, 'Cannot fetch a partial log. Please reload manually.'));
+          break;
+        }
+      }
+      await async_sleep(1000);
     }
   }
 };
@@ -585,6 +725,9 @@ window.addEventListener('load', function() {
   _add_key_description('show-if-theater', ['Q'], 'Open the log at the current plot.', 'Q');
   _add_key_description('show-if-theater', ['ESC'], 'Go back.', 'Escape');
 
+  if (document.body.classList.contains('indentlogger'))
+    document.body.appendChild(create_element('div', {id: 'log'}));
+
   document.body.insertBefore(
     create_element('div', {id: 'header'},
       create_element('div', {'class': 'bar'},
@@ -612,7 +755,7 @@ window.addEventListener('load', function() {
   window.addEventListener('resize', ev => window.requestAnimationFrame(theater._update_overview_layout.bind(theater)));
 
   window.theater = new Theater();
-  window.log = new Log();
+  window.log = document.body.classList.contains('indentlogger') ? new IndentLog() : new Log();
   document.body.appendChild(theater.root);
   document.body.appendChild(create_element('div', {'class': 'dropdown-catchall', events: {click: ev => { document.body.classList.remove('droppeddown'); ev.stopPropagation(); ev.preventDefault(); }}}));
 
@@ -624,6 +767,12 @@ window.addEventListener('load', function() {
     log.loglevel = LEVELS.indexOf('user');
   apply_state(state);
   state_control = 'enabled';
+
+  if (document.body.classList.contains('indentlogger')) {
+    document.body.appendChild(create_element('div', {id: 'footer'}));
+    window.log.check_progress();
+    window.log.update_log();
+  }
 });
 
 // vim: sts=2:sw=2:et
