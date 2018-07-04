@@ -163,9 +163,22 @@ const Log = class {
       this.loglevel = this.loglevel-1;
       update_state();
     }
+    else if (ev.key.toLowerCase() == 'f') {
+      document.body.classList.toggle('follow');
+      if (document.body.classList.contains('follow')) {
+        this.root.scrollTop = this.root.scrollTopMax;
+        this.root.addEventListener('scroll', window.log._cancel_follow_on_scroll_up);
+      }
+    }
     else
       return false;
     return true;
+  }
+  _cancel_follow_on_scroll_up(e) {
+    if (window.log.root.scrollTop < window.log.root.scrollTopMax) {
+      document.body.classList.remove('follow');
+      window.log.root.removeEventListener('scroll', window.log._cancel_follow_on_scroll_up);
+    }
   }
   *_reverse_contexts_iterator(context) {
     while (true) {
@@ -282,6 +295,7 @@ const IndentLog = class extends Log {
     this.root = document.getElementById('log');
     this._fetched_bytes = 0;
     this._available_bytes = 0;
+    this._pending_data = '';
     this._contexts = [];
     this._ncontexts = 0;
     this._nanchors = 0;
@@ -292,6 +306,7 @@ const IndentLog = class extends Log {
       title.addEventListener('click', this._context_toggle_collapsed);
   }
   _parse_line(line) {
+    line = decodeURIComponent(line);
     let i = 0;
     while (i < this._contexts.length && line[i] == ' ')
       i += 1;
@@ -350,18 +365,32 @@ const IndentLog = class extends Log {
     const footer_progress = create_element('div');
     footer.appendChild(footer_progress);
     while (true) {
+      if (document.visibilityState == 'hidden') {
+        // TODO: footer.classList.add('update-paused');
+        await new Promise(resolve => {this._page_became_visible = resolve;});
+        delete this._page_became_visible;
+        // TODO: footer.classList.remove('update-paused');
+      }
       try {
         const response = await fetch('progress.json', {cache: 'no-cache'});
         const data = await response.json();
         if (data.logpos !== undefined)
           this._available_bytes = data.logpos;
+        if (this._fetched_bytes < this._available_bytes && this._data_arrived)
+          this._data_arrived();
         if (data.state == 'finished')
           break;
         footer_progress.innerHTML = '';
+        let first = true;
         for (const context of data.context) {
+          if (!first)
+            footer_progress.appendChild(create_element('span', {'class': 'sep'}, ' • '));
+          first = false;
           footer_progress.appendChild(create_element('span', {'class': 'context', innerHTML: context}));
-          footer_progress.appendChild(create_element('span', {'class': 'sep'}, ' • '));
         }
+        if (!first)
+          footer_progress.appendChild(create_element('span', {'class': 'sep'}, ' • '));
+        first = false;
         footer_progress.appendChild(create_element('span', {'class': 'text', innerHTML: data.text}));
       }
       catch (e) {
@@ -372,25 +401,44 @@ const IndentLog = class extends Log {
     this.finished = true;
     footer_progress.innerHTML = 'finished';
   }
+  init_log() {
+    const logdata = document.getElementById('logdata');
+    if (logdata == null)
+      throw 'cannot find data section';
+    this._pending_data = logdata.textContent;
+    const i_newline = this._pending_data.indexOf('\n');
+    if (i_newline < 0)
+      throw 'cannot find data offset';
+    this._fetched_bytes = parseInt(this._pending_data.slice(0, i_newline)) + this._pending_data.length;
+    this._pending_data = this._pending_data.slice(i_newline+1);
+    while (true) {
+      const i_newline = this._pending_data.indexOf('\n');
+      if (i_newline < 0)
+        break;
+      this._parse_line(this._pending_data.slice(0, i_newline));
+      this._pending_data = this._pending_data.slice(i_newline+1);
+    }
+  }
   async update_log() {
     // TODO: Check support for range request first, see https://developer.mozilla.org/en-US/docs/Web/HTTP/Range_requests
-    let pending_data = '';
     while (!this.finished || this._fetched_bytes < this._available_bytes) {
       if (this._fetched_bytes < this._available_bytes) {
-        const response = await fetch('logdata.txt', {cache: 'no-cache', headers: {'Range': `bytes=${this._fetched_bytes}-${this._available_bytes-1}`}});
+        const response = await fetch('log.data', {cache: 'no-cache', headers: {'Range': `bytes=${this._fetched_bytes}-${this._available_bytes-1}`}});
         if (response.status == 206 && response.headers.has('content-range') && response.headers.get('content-range').startsWith(`bytes ${this._fetched_bytes}-`)) {
           const new_fetched_bytes = parseInt(response.headers.get('content-range').split('-')[1])+1;
           if (new_fetched_bytes <= this._fetched_bytes)
             throw 'invalid partial response: content range end smaller than requested start';
           this._fetched_bytes = new_fetched_bytes;
-          pending_data += await response.text();
+          this._pending_data += await response.text();
           while (true) {
-            const i_newline = pending_data.indexOf('\n');
+            const i_newline = this._pending_data.indexOf('\n');
             if (i_newline < 0)
               break;
-            this._parse_line(pending_data.slice(0, i_newline));
-            pending_data = pending_data.slice(i_newline+1);
+            this._parse_line(this._pending_data.slice(0, i_newline));
+            this._pending_data = this._pending_data.slice(i_newline+1);
           }
+          if (document.body.classList.contains('follow'))
+            this.root.scrollTop = this.root.scrollTopMax;
         }
         else {
           if (this._fetched_bytes == 0) {
@@ -406,8 +454,12 @@ const IndentLog = class extends Log {
           document.getElementById('log').appendChild(create_element('div', {}, 'Cannot fetch a partial log. Please reload manually.'));
           break;
         }
+        await async_sleep(1000);
       }
-      await async_sleep(1000);
+      else {
+        await new Promise(resolve => {this._data_arrived = resolve;});
+        delete this._data_arrived;
+      }
     }
   }
 };
@@ -706,6 +758,11 @@ const keydown_handler = function(ev) {
   ev.preventDefault();
 }
 
+const visibilitychange_handler = function() {
+  if (document.visibilityState == 'visible' && window.log._page_became_visible)
+    window.log._page_became_visible();
+};
+
 window.addEventListener('load', function() {
   const grid = create_element('div', {'class': 'key_description'});
   const _add_key_description = function(cls, keys, description, _key) {
@@ -718,6 +775,7 @@ window.addEventListener('load', function() {
   _add_key_description('show-if-log', ['-'], 'Decrease log verbosity.','-');
   _add_key_description('show-if-log', ['C'], 'Collapse all contexts.','C');
   _add_key_description('show-if-log', ['E'], 'Expand all contexts.', 'E');
+  _add_key_description('show-if-log', ['F'], 'Follow log.', 'F');
   _add_key_description('show-if-theater', ['TAB'], 'Toggle between overview and focus.', 'Tab');
   _add_key_description('show-if-theater', ['SPACE'], 'Lock to a plot category or unlock.', ' ');
   _add_key_description('show-if-theater', ['LEFT'], 'Show the next plot.', 'ArrowLeft');
@@ -768,10 +826,12 @@ window.addEventListener('load', function() {
   apply_state(state);
   state_control = 'enabled';
 
+  window.log.init_log();
   if (document.body.classList.contains('indentlogger')) {
     document.body.appendChild(create_element('div', {id: 'footer'}));
     window.log.check_progress();
     window.log.update_log();
+    document.addEventListener('visibilitychange', visibilitychange_handler);
   }
 });
 

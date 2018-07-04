@@ -414,8 +414,10 @@ class IndentLog(ContextTreeLog):
       self.write('error', msg)
 
   def _init_context(self, stack):
-    self._open = stack.enter_context(_makedirs(self._outdir, exist_ok=True))
-    self._logfile = stack.enter_context(self._open('logdata.txt', 'w', exists='overwrite'))
+    mkdirs = _makedirs(self._outdir, exist_ok=True)
+    self._open = stack.enter_context(mkdirs)
+    self._logfile = stack.enter_context(self._open('log.html', 'w', exists='overwrite'))
+    mkdirs.link(self._logfile.name, 'log.data')
     self._progressfile = stack.enter_context(self._open('progress.json', 'w', exists='overwrite'))
     # Copy dependencies.
     paths = {}
@@ -425,18 +427,19 @@ class IndentLog(ContextTreeLog):
       with self._open(hashlib.sha1(data).hexdigest() + '.' + filename.split('.')[1], 'wb', exists='skip') as dst:
         dst.write(data)
       paths[filename.replace('.', '_')] = dst.name
-    with self._open('log.html', 'w', exists='overwrite') as f:
-      print('<!DOCTYPE html>', file=f)
-      print('<html>', file=f)
-      print(HTMLHEAD.format(title=html.escape(self._title), **paths), file=f)
-      body_attrs = [('class', 'indentlogger')]
-      if self._scriptname:
-        body_attrs.append(('data-scriptname', html.escape(self._scriptname)))
-        body_attrs.append(('data-latest', '../../../../log.html'))
-      if self._funcname:
-        body_attrs.append(('data-funcname', html.escape(self._funcname)))
-      print(''.join(['<body'] + [' {}="{}"'.format(*item) for item in body_attrs] + ['></body>']), file=f)
-      print('</html>', file=f)
+    # Write log head.
+    self._print('<!DOCTYPE html>')
+    self._print('<html>')
+    self._print(HTMLHEAD.format(title=html.escape(self._title), **paths))
+    body_attrs = [('class', 'indentlogger')]
+    if self._scriptname:
+      body_attrs.append(('data-scriptname', html.escape(self._scriptname)))
+      body_attrs.append(('data-latest', '../../../../log.html'))
+    if self._funcname:
+      body_attrs.append(('data-funcname', html.escape(self._funcname)))
+    self._print(''.join(['<body'] + [' {}="{}"'.format(*item) for item in body_attrs] + ['>']))
+    self._print('<script id="logdata" type="application/octet-stream">', end='')
+    self._print('{}\n'.format(self._logfile.tell()))
     stack.push(self._write_post_mortem)
     stack.push(self._finish_progressfile)
     super()._init_context(stack)
@@ -448,14 +451,14 @@ class IndentLog(ContextTreeLog):
     self._progressfile.write('\n')
     self._progressfile.flush()
 
-  def _print(self, *args, flush=False):
-    print(*args, file=self._logfile)
+  def _print(self, *args, flush=False, **kwargs):
+    print(*args, file=self._logfile, **kwargs)
     if flush:
       self._logfile.flush()
 
   def _print_push_context(self, title):
     title = title.replace('\n', '').replace('\r', '')
-    self._print('{}c {}'.format(self._prefix, html.escape(title)), flush=True)
+    self._print(urllib.parse.quote('{}c {}'.format(self._prefix, html.escape(title))), flush=True)
     self._prefix += ' '
 
   def _print_pop_context(self):
@@ -469,7 +472,7 @@ class IndentLog(ContextTreeLog):
     for line in text.splitlines():
       if firstline is None:
         firstline = line
-      self._print('{}{} {}'.format(self._prefix, linetype, line), flush=True)
+      self._print(urllib.parse.quote('{}{} {}'.format(self._prefix, linetype, line)), flush=True)
       linetype = '|'
     self._print_progress(level, firstline)
     self._progressupdate = 0
@@ -690,6 +693,9 @@ class _makedirs:
   def _open(self, name, *args):
     return os.open(name, *args, dir_fd=self.path) if isinstance(self.path, int) \
       else os.open(os.path.join(self.path, name), *args)
+  def link(self, src, dst):
+    return os.link(src, dst, src_dir_fd=self.path, dst_dir_fd=self.path) if isinstance(self.path, int) \
+      else os.link(os.path.join(self.path, src), os.path.join(self.path, dst))
   def open(self, filename, mode, exists):
     if mode not in ('w', 'wb'):
       raise ValueError('invalid mode: {!r}'.format(mode))
