@@ -396,7 +396,7 @@ class IndentLog(ContextTreeLog):
     self._scriptname = scriptname
     self._funcname = funcname
     self._funcargs = funcargs
-    self._prefix = ''
+    self._nprintedcontexts = 0
     self._progressupdate = 0 # progress update interval in seconds
     self._progressinterval = progressinterval or getattr(config, 'progressinterval', 1)
     super().__init__()
@@ -439,42 +439,42 @@ class IndentLog(ContextTreeLog):
       body_attrs.append(('data-funcname', html.escape(self._funcname)))
     self._print(''.join(['<body'] + [' {}="{}"'.format(*item) for item in body_attrs] + ['>']))
     self._print('<script id="logdata" type="application/octet-stream">', end='')
-    self._print('{}\n'.format(self._logfile.tell()))
-    stack.push(self._write_post_mortem)
+    self._print('{}'.format(self._logfile.tell()))
+    # NOTE: `_finish_progressfile` should be called after anything else that
+    # updates the progress file, like `write_post_mortem`, hence added to the
+    # stack before.  Otherwise the `state="finished"` part written by
+    # `_finish_progressfile` will be removed.
     stack.push(self._finish_progressfile)
+    stack.push(self._write_post_mortem)
     super()._init_context(stack)
 
   def _finish_progressfile(self, etype, value, tb):
     self._progressfile.seek(0)
     self._progressfile.truncate(0)
-    json.dump(dict(logpos=self._logfile.tell(), state='finished'), self._progressfile)
+    if etype is None:
+      text = 'finished'
+    elif etype in (KeyboardInterrupt, bdb.BdbQuit):
+      text = 'killed by user'
+    else:
+      text = 'exception: {}'.format((value))
+    self._logfile.flush()
+    json.dump(dict(logpos=self._logfile.tell(), state='finished', context=[], text=text), self._progressfile)
     self._progressfile.write('\n')
     self._progressfile.flush()
 
-  def _print(self, *args, flush=False, **kwargs):
+  def _print(self, *args, **kwargs):
     print(*args, file=self._logfile, **kwargs)
-    if flush:
-      self._logfile.flush()
 
   def _print_push_context(self, title):
-    title = title.replace('\n', '').replace('\r', '')
-    self._print(urllib.parse.quote('{}c {}'.format(self._prefix, html.escape(title))), flush=True)
-    self._prefix += ' '
+    self._print(urllib.parse.quote('{}c{}'.format(self._nprintedcontexts, title)))
+    self._nprintedcontexts += 1
 
   def _print_pop_context(self):
-    self._prefix = self._prefix[:-1]
+    self._nprintedcontexts -= 1
 
-  def _print_item(self, level, text, escape=True):
-    if escape:
-      text = html.escape(text)
-    level = linetype = html.escape(level[0])
-    firstline = None
-    for line in text.splitlines():
-      if firstline is None:
-        firstline = line
-      self._print(urllib.parse.quote('{}{} {}'.format(self._prefix, linetype, line)), flush=True)
-      linetype = '|'
-    self._print_progress(level, firstline)
+  def _print_item(self, level, text):
+    self._print(urllib.parse.quote('{}{}t{}'.format(self._nprintedcontexts, level[0], text)))
+    self._print_progress(level, text.split('\n', 1)[0])
     self._progressupdate = 0
 
   def _push_context(self, title, mayskip):
@@ -491,6 +491,7 @@ class IndentLog(ContextTreeLog):
   def _print_progress(self, level, text):
     self._progressfile.seek(0)
     self._progressfile.truncate(0)
+    self._logfile.flush()
     json.dump(dict(logpos=self._logfile.tell(), context=self._context, text=text, level=level, state='running'), self._progressfile)
     self._progressfile.write('\n')
     self._progressfile.flush()
@@ -499,7 +500,7 @@ class IndentLog(ContextTreeLog):
   def open(self, filename, mode, level, exists):
     with self._open(filename, mode, exists) as f:
       yield f
-    self._print_item(level, '<a href="{href}">{name}</a>'.format(href=urllib.parse.quote(f.name), name=html.escape(filename)), escape=False)
+    self._print(urllib.parse.quote('{}{}a{}'.format(self._nprintedcontexts, level[0], json.dumps(dict(href=urllib.parse.quote(f.name), text=filename), sort_keys=True))))
 
 class TeeLog(Log):
   '''Simultaneously interface multiple logs'''

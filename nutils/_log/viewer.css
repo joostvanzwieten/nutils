@@ -96,8 +96,9 @@ body.theater-locked #theater.overview img.plot.selected_category:not(.selected) 
 #theater.overview .plot { background: white; max-width: 100%; max-height: 100%; }
 #theater.overview .label { position: absolute; width: 100%; left: 0px; right: 0px; bottom: 0px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-#footer { position: fixed; bottom: 0px; left: 0px; right: 0px; width: 100%; height: 48px; z-index: 2; background: hsl(0, 0%, 15%); display: flex; align-items: center; color: #fff; padding: 0 10px; }
-#footer .context { color: #ccc; }
+#footer { position: fixed; bottom: 0px; left: 0px; right: 0px; width: 100%; height: 48px; z-index: 2; background: hsl(0, 0%, 15%); display: flex; align-items: center; color: #fff; box-shadow: 0px 0px 4px 2px hsla(0,0%,0%,0.25); }
+#footer > div { flex: 1 1 auto; padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#footer .context, #footer .sep { color: #ccc; }
 
 /* vim: sts=2:sw=2:et
  */

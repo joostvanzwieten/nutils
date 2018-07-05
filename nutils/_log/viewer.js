@@ -166,7 +166,7 @@ const Log = class {
     else if (ev.key.toLowerCase() == 'f') {
       document.body.classList.toggle('follow');
       if (document.body.classList.contains('follow')) {
-        this.root.scrollTop = this.root.scrollTopMax;
+        this.root.scrollTop = this.root.scrollHeight - this.root.clientHeight;
         this.root.addEventListener('scroll', window.log._cancel_follow_on_scroll_up);
       }
     }
@@ -175,7 +175,8 @@ const Log = class {
     return true;
   }
   _cancel_follow_on_scroll_up(e) {
-    if (window.log.root.scrollTop < window.log.root.scrollTopMax) {
+
+    if (window.log.root.scrollTop < window.log.root.scrollHeight - window.log.root.clientHeight) {
       document.body.classList.remove('follow');
       window.log.root.removeEventListener('scroll', window.log._cancel_follow_on_scroll_up);
     }
@@ -236,6 +237,7 @@ const Log = class {
       if (!stem)
         continue;
       const category = (stem.match(/^(.*?)[0-9]*$/) || [null, null])[1];
+      anchor.dataset.href = anchor.href;
       anchor.addEventListener('click', this._plot_clicked);
 
       let context = null;
@@ -262,7 +264,7 @@ const Log = class {
     ev.stopPropagation();
     ev.preventDefault();
     window.history.pushState(window.history.state, 'log');
-    theater.href = ev.currentTarget.href;
+    theater.href = ev.currentTarget.dataset.href;
     document.body.dataset.show = 'theater';
     update_state();
   }
@@ -305,44 +307,52 @@ const IndentLog = class extends Log {
     for (const title of document.querySelectorAll('#log .context > .title'))
       title.addEventListener('click', this._context_toggle_collapsed);
   }
+  _create_anchor(data, context_id, context_label) {
+    const a = create_element('a', {href: data.href, dataset: {href: data.href}}, data.text);
+    const suffix = VIEWABLE.filter(suffix => data.text.endsWith(suffix));
+    if (!suffix.length)
+      return a;
+    const stem = data.text.slice(0, data.text.length - suffix[0].length);
+    if (!stem)
+      return a;
+    const category = (stem.match(/^(.*?)[0-9]*$/) || [null, null])[1];
+    a.addEventListener('click', this._plot_clicked);
+    a.id = `plot-${this._nanchors}`;
+    this._nanchors += 1;
+    theater.add_plot(data.href, a.id, category, context_id, (context_label ? context_label + '/' : '') + stem);
+    return a;
+  }
   _parse_line(line) {
-    line = decodeURIComponent(line);
-    let i = 0;
-    while (i < this._contexts.length && line[i] == ' ')
-      i += 1;
-    if (i < this._contexts.length)
-      // Close remaining contexts.
-      this._contexts = this._contexts.slice(0, i);
-    const type = line[i];
-    const loglevel = 'ewuid'.indexOf(type);
-    const value = line.slice(i+2);
+    const item = decodeURIComponent(line).match(/^([0-9]+)([a-z])(.*)$/);
+    const ncontexts = parseInt(item[1]);
+    const type = item[2];
+    const value = item[3];
+    // Close remaining contexts.
+    if (ncontexts < this._contexts.length)
+      this._contexts = this._contexts.slice(0, ncontexts);
     const context = this._contexts.length > 0 ? this._contexts[this._contexts.length-1] : {element: null, children: this.root};
+    const loglevel = 'ewuid'.indexOf(type);
     if (type == 'c') {
       const children = create_element('div', {'class': 'children'});
-      const title = create_element('div', {'class': 'title', innerHTML: value, events: {click: this._context_toggle_collapsed}});
-      const element = create_element('div', {'class': 'context', dataset: {id: this._ncontexts}}, title, children);
-      element.dataset.label = (context.element && context.element.dataset.label ? context.element.label + '/' : '') + title.innerText;
+      const title = create_element('div', {'class': 'title', events: {click: this._context_toggle_collapsed}}, value);
+      const element = create_element('div', {'class': 'context', dataset: {id: this._ncontexts, label: (context.element && context.element.dataset.label ? context.element.label + '/' : '') + value}}, title, children);
       context.children.appendChild(element);
       this._contexts.push({element: element, children: children});
       this._ncontexts += 1;
     }
     else if (loglevel >= 0) {
-      const item = create_element('div', {'class': 'item', dataset: {loglevel: loglevel}, innerHTML: value});
-      // Link viewable anchors to theater.
-      for (const anchor of item.querySelectorAll(':scope > a')) {
-        const filename = anchor.innerText;
-        const suffix = VIEWABLE.filter(suffix => filename.endsWith(suffix));
-        if (!suffix.length)
-          continue;
-        const stem = filename.slice(0, filename.length - suffix[0].length);
-        if (!stem)
-          continue;
-        const category = (stem.match(/^(.*?)[0-9]*$/) || [null, null])[1];
-        anchor.addEventListener('click', this._plot_clicked);
-        anchor.id = `plot-${this._nanchors}`;
-        this._nanchors += 1;
-        theater.add_plot(anchor.href, anchor.id, category, (context.element ? context.element.dataset.id : undefined), (context.element && context.element.dataset.label ? context.element.dataset.label + '/' : '') + stem);
+      let item;
+      if (value[0] == 'a') {
+        const context_id = context.element ? context.element.dataset.id : undefined;
+        const context_label = context.element && context.element.dataset.label ? context.element.dataset.label : '';
+        const a = this._create_anchor(JSON.parse(value.slice(1)), context_id, context_label);
+        item = create_element('div', {'class': 'item', dataset: {loglevel: loglevel}}, a);
       }
+      else if (value[0] == 't') {
+        item = create_element('div', {'class': 'item', dataset: {loglevel: loglevel}}, value.slice(1));
+      }
+      else
+        throw `Cannot parse log line: ${line}.`;
       context.children.appendChild(item);
       // Apply log level to parent contexts.
       // NOTE: `parseInt` returns `NaN` if the `parent` loglevel is undefined
@@ -353,12 +363,8 @@ const IndentLog = class extends Log {
         this._contexts[i].element.dataset.loglevel = loglevel;
       }
     }
-    else if (type == '|') {
-      // TODO
-    }
-    else {
-      // TODO: log something
-    }
+    else
+      throw `Cannot parse log line: ${line}.`;
   }
   async check_progress() {
     const footer = document.getElementById('footer');
@@ -378,8 +384,6 @@ const IndentLog = class extends Log {
           this._available_bytes = data.logpos;
         if (this._fetched_bytes < this._available_bytes && this._data_arrived)
           this._data_arrived();
-        if (data.state == 'finished')
-          break;
         footer_progress.innerHTML = '';
         let first = true;
         for (const context of data.context) {
@@ -388,10 +392,14 @@ const IndentLog = class extends Log {
           first = false;
           footer_progress.appendChild(create_element('span', {'class': 'context', innerHTML: context}));
         }
-        if (!first)
-          footer_progress.appendChild(create_element('span', {'class': 'sep'}, ' • '));
-        first = false;
-        footer_progress.appendChild(create_element('span', {'class': 'text', innerHTML: data.text}));
+        if (data.text) {
+          if (!first)
+            footer_progress.appendChild(create_element('span', {'class': 'sep'}, ' • '));
+          first = false;
+          footer_progress.appendChild(create_element('span', {'class': 'text', innerHTML: data.text}));
+        }
+        if (data.state == 'finished')
+          break;
       }
       catch (e) {
         console.log(`failed to fetch/process progress file: ${e}`);
@@ -399,7 +407,6 @@ const IndentLog = class extends Log {
       await async_sleep(1000);
     }
     this.finished = true;
-    footer_progress.innerHTML = 'finished';
   }
   init_log() {
     const logdata = document.getElementById('logdata');
@@ -438,7 +445,7 @@ const IndentLog = class extends Log {
             this._pending_data = this._pending_data.slice(i_newline+1);
           }
           if (document.body.classList.contains('follow'))
-            this.root.scrollTop = this.root.scrollTopMax;
+            this.root.scrollTop = this.root.scrollHeight - this.root.clientHeight;
         }
         else {
           if (this._fetched_bytes == 0) {
