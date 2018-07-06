@@ -23,9 +23,9 @@ body[data-show='theater'] #header > .dropdown { background: hsla(140,46%,90%,0.9
 
 #header > .bar .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-#header > .bar svg { stroke: #fffb; fill: #fffb; }
-#header > .bar .icon { width: 32px; height: 32px; border-radius: 2px; }
-#header > .bar .small-icon-container { display: grid; align-items: center; justify-items: center; }
+#header > .bar svg, #footer svg { stroke: #fffb; fill: #fffb; }
+#header > .bar .icon, #footer .icon { width: 32px; height: 32px; border-radius: 2px; }
+#header > .bar .small-icon-container, #footer .small-icon-container { display: grid; align-items: center; justify-items: center; }
 #header > .bar .icon.button { transition: background .25s; }
 #header > .bar .icon.button:hover { background: #fff4; }
 
@@ -96,9 +96,16 @@ body.theater-locked #theater.overview img.plot.selected_category:not(.selected) 
 #theater.overview .plot { background: white; max-width: 100%; max-height: 100%; }
 #theater.overview .label { position: absolute; width: 100%; left: 0px; right: 0px; bottom: 0px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-#footer { position: fixed; bottom: 0px; left: 0px; right: 0px; width: 100%; height: 48px; z-index: 2; background: hsl(0, 0%, 15%); display: flex; align-items: center; color: #fff; box-shadow: 0px 0px 4px 2px hsla(0,0%,0%,0.25); }
-#footer > div { flex: 1 1 auto; padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#footer .context, #footer .sep { color: #ccc; }
+#footer { position: fixed; bottom: 0px; left: 0px; right: 0px; width: 100%; height: 48px; z-index: 2; background: hsl(0, 0%, 15%); display: flex; align-items: center; color: #fff; box-shadow: 0px 0px 4px 2px hsla(0,0%,0%,0.25); padding: 0 4px; box-sizing: border-box; }
+#footer > * { margin: 0 calc(8px / 2); }
+#footer-status { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0 calc(8px / 2 + 6px); }
+#footer-status .context, #footer .sep { color: #ccc; }
+#footer .icon { flex: 0 0 auto; }
+
+body:not(.follow) #footer-follow { display: none; }
+
+a.thumb { display: grid; grid: max-content max-content / 128px; float: left; }
+a.thumb .name { text-align: center; }
 
 /* vim: sts=2:sw=2:et
  */

@@ -111,6 +111,7 @@ class DataLog(Log):
 
   @contextlib.contextmanager
   def open(self, filename, mode, level, exists):
+    _check_filemode(mode)
     with self._open(filename, mode, exists) as f:
       yield f
 
@@ -244,6 +245,7 @@ class StdoutLog(ContextLog):
 
   @contextlib.contextmanager
   def open(self, filename, mode, level, exists):
+    _check_filemode(mode)
     yield _devnull(filename)
     self.write(level, filename)
 
@@ -383,6 +385,7 @@ class HtmlLog(ContextTreeLog):
 
   @contextlib.contextmanager
   def open(self, filename, mode, level, exists):
+    _check_filemode(mode)
     with self._open(filename, mode, exists) as f:
       yield f
     self._print_item(level, '<a href="{href}">{name}</a>'.format(href=urllib.parse.quote(f.name), name=html.escape(filename)), escape=False)
@@ -400,18 +403,6 @@ class IndentLog(ContextTreeLog):
     self._progressupdate = 0 # progress update interval in seconds
     self._progressinterval = progressinterval or getattr(config, 'progressinterval', 1)
     super().__init__()
-
-  def _write_post_mortem(self, etype, value, tb):
-    if etype in (None, SystemExit):
-      return
-    elif etype in (KeyboardInterrupt, bdb.BdbQuit):
-      self.write('error', 'killed by user')
-    else:
-      try:
-        msg = ''.join(traceback.format_exception(etype, value, tb))
-      except Exception as e:
-        msg = '{} (traceback failed: {})'.format(value, e)
-      self.write('error', msg)
 
   def _init_context(self, stack):
     mkdirs = _makedirs(self._outdir, exist_ok=True)
@@ -444,20 +435,25 @@ class IndentLog(ContextTreeLog):
     # updates the progress file, like `write_post_mortem`, hence added to the
     # stack before.  Otherwise the `state="finished"` part written by
     # `_finish_progressfile` will be removed.
-    stack.push(self._finish_progressfile)
-    stack.push(self._write_post_mortem)
+    stack.push(self._write_footers)
     super()._init_context(stack)
 
-  def _finish_progressfile(self, etype, value, tb):
-    self._progressfile.seek(0)
-    self._progressfile.truncate(0)
-    if etype is None:
+  def _write_footers(self, etype, value, tb):
+    if etype in (None, SystemExit):
       text = 'finished'
     elif etype in (KeyboardInterrupt, bdb.BdbQuit):
       text = 'killed by user'
+      self.write('error', text)
     else:
       text = 'exception: {}'.format((value))
+      try:
+        msg = ''.join(traceback.format_exception(etype, value, tb))
+      except Exception as e:
+        msg = '{} (traceback failed: {})'.format(value, e)
+      self.write('error', msg)
     self._logfile.flush()
+    self._progressfile.seek(0)
+    self._progressfile.truncate(0)
     json.dump(dict(logpos=self._logfile.tell(), state='finished', context=[], text=text), self._progressfile)
     self._progressfile.write('\n')
     self._progressfile.flush()
@@ -489,18 +485,35 @@ class IndentLog(ContextTreeLog):
     self._progressupdate = t + self._progressinterval
 
   def _print_progress(self, level, text):
+    self._logfile.flush()
     self._progressfile.seek(0)
     self._progressfile.truncate(0)
-    self._logfile.flush()
     json.dump(dict(logpos=self._logfile.tell(), context=self._context, text=text, level=level, state='running'), self._progressfile)
     self._progressfile.write('\n')
     self._progressfile.flush()
 
   @contextlib.contextmanager
   def open(self, filename, mode, level, exists):
-    with self._open(filename, mode, exists) as f:
+    _check_filemode(mode)
+    with self._open(filename, mode+'+', exists) as f:
       yield f
-    self._print(urllib.parse.quote('{}{}a{}'.format(self._nprintedcontexts, level[0], json.dumps(dict(href=urllib.parse.quote(f.name), text=filename), sort_keys=True))))
+      data = dict(href=urllib.parse.quote(f.name), text=filename)
+      # Try to make a thumbnail.
+      if filename.endswith(('.png', '.jpg', '.jpeg')):
+        f.seek(0)
+        if True:
+        #try:
+          import PIL.Image
+          im = PIL.Image.open(f)
+          data['size'] = im.size
+          im.thumbnail((128, 128))
+          with self._open('_thumb.png', 'wb', exists='rename') as f_thumb:
+            im.save(f_thumb, 'PNG')
+          data['thumb'] = urllib.parse.quote(f_thumb.name)
+          data['thumb_size'] = im.size
+        #except:
+        #  pass
+    self._print(urllib.parse.quote('{}{}a{}'.format(self._nprintedcontexts, level[0], json.dumps(data, sort_keys=True))))
 
 class TeeLog(Log):
   '''Simultaneously interface multiple logs'''
@@ -527,6 +540,7 @@ class TeeLog(Log):
 
   @contextlib.contextmanager
   def open(self, filename, mode, level, exists):
+    _check_filemode(mode)
     with contextlib.ExitStack() as stack:
       yield _multistream(stack.enter_context(log.open(filename, mode, level, exists)) for log in self.logs)
 
@@ -610,6 +624,7 @@ class RecordLog(Log):
 
   @contextlib.contextmanager
   def open(self, filename, mode, level, exists):
+    _check_filemode(mode)
     for title in self._contexts[self._appended_contexts:]:
       self._messages.append(('entercontext', title))
     self._appended_contexts = len(self._contexts)
@@ -678,6 +693,10 @@ class _devnull(io.IOBase):
   def write(self, data):
     pass
 
+def _check_filemode(mode):
+  if mode not in ('w', 'wb'):
+    raise ValueError('invalid mode: {!r}'.format(mode))
+
 class _makedirs:
   def __init__(self, path, exist_ok=False):
     self.path = path
@@ -698,8 +717,6 @@ class _makedirs:
     return os.link(src, dst, src_dir_fd=self.path, dst_dir_fd=self.path) if isinstance(self.path, int) \
       else os.link(os.path.join(self.path, src), os.path.join(self.path, dst))
   def open(self, filename, mode, exists):
-    if mode not in ('w', 'wb'):
-      raise ValueError('invalid mode: {!r}'.format(mode))
     if exists not in ('overwrite', 'rename', 'skip'):
       raise ValueError('invalid exists: {!r}'.format(exists))
     if exists != 'overwrite':

@@ -88,13 +88,21 @@ const log_level_paths = {
   4: 'M -4 -4 L 2 -4 L 4 -2 L 4 2 L 2 4 L -4 4 Z'
 };
 
-const create_log_level_icon = function(level, options) {
+const create_boxed_icon = function(path, options) {
+  if (window._n_boxed_icons == undefined)
+    window._n_boxed_icons = 0;
+  const path_id = `_boxed_icon_${window._n_boxed_icons}_m`;
+  window._n_boxed_icons += 1;
   return (
     create_svg_element('svg', union_dict({viewBox: '-9 -9 18 18', style: 'width: 18px; height: 18px; border-radius: 1px;'}, options),
-      create_svg_element('mask', {id: 'm'},
+      create_svg_element('mask', {id: path_id},
         create_svg_element('path', {d: 'M -10 -10 L -10 10 L 10 10 L 10 -10 Z', fill: 'white', stroke: 'none'}),
-        create_svg_element('path', {d: log_level_paths[level], fill: 'none', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', stroke: 'black'})),
-      create_svg_element('path', {mask: 'url(#m)', d: 'M -9 -9 L -9 9 L 9 9 L 9 -9 Z', stroke: 'none'})));
+        create_svg_element('path', {d: path, fill: 'none', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', stroke: 'black'})),
+      create_svg_element('path', {mask: `url(#${path_id})`, d: 'M -9 -9 L -9 9 L 9 9 L 9 -9 Z', stroke: 'none'})));
+};
+
+const create_log_level_icon = function(level, options) {
+  return create_boxed_icon(log_level_paths[level], options);
 };
 
 // LOG
@@ -163,13 +171,8 @@ const Log = class {
       this.loglevel = this.loglevel-1;
       update_state();
     }
-    else if (ev.key.toLowerCase() == 'f') {
-      document.body.classList.toggle('follow');
-      if (document.body.classList.contains('follow')) {
-        this.root.scrollTop = this.root.scrollHeight - this.root.clientHeight;
-        this.root.addEventListener('scroll', window.log._cancel_follow_on_scroll_up);
-      }
-    }
+    else if (ev.key.toLowerCase() == 'f')
+      this.toggle_follow();
     else
       return false;
     return true;
@@ -179,6 +182,13 @@ const Log = class {
     if (window.log.root.scrollTop < window.log.root.scrollHeight - window.log.root.clientHeight) {
       document.body.classList.remove('follow');
       window.log.root.removeEventListener('scroll', window.log._cancel_follow_on_scroll_up);
+    }
+  }
+  toggle_follow() {
+    document.body.classList.toggle('follow');
+    if (document.body.classList.contains('follow')) {
+      this.root.scrollTop = this.root.scrollHeight - this.root.clientHeight;
+      this.root.addEventListener('scroll', window.log._cancel_follow_on_scroll_up);
     }
   }
   *_reverse_contexts_iterator(context) {
@@ -308,7 +318,19 @@ const IndentLog = class extends Log {
       title.addEventListener('click', this._context_toggle_collapsed);
   }
   _create_anchor(data, context_id, context_label) {
-    const a = create_element('a', {href: data.href, dataset: {href: data.href}}, data.text);
+    const a = create_element('a', {href: data.href, dataset: {href: data.href}});
+    if (data.thumb) {
+      const im = create_element('img', {src: data.thumb});
+      if (data.thumb_size) {
+        im.width = data.thumb_size[0];
+        im.height = data.thumb_size[1];
+      }
+      a.appendChild(im);
+      a.appendChild(create_element('div', {'class': 'name'}, data.text));
+      a.classList.add('thumb');
+    }
+    else
+      a.appendChild(document.createTextNode(data.text));
     const suffix = VIEWABLE.filter(suffix => data.text.endsWith(suffix));
     if (!suffix.length)
       return a;
@@ -341,19 +363,20 @@ const IndentLog = class extends Log {
       this._ncontexts += 1;
     }
     else if (loglevel >= 0) {
-      let item;
       if (value[0] == 'a') {
         const context_id = context.element ? context.element.dataset.id : undefined;
         const context_label = context.element && context.element.dataset.label ? context.element.dataset.label : '';
         const a = this._create_anchor(JSON.parse(value.slice(1)), context_id, context_label);
-        item = create_element('div', {'class': 'item', dataset: {loglevel: loglevel}}, a);
+        if (context.children.lastElementChild && context.children.lastElementChild.querySelector('a.thumb'))
+          context.children.lastElementChild.appendChild(a);
+        else
+          context.children.appendChild(create_element('div', {'class': 'item', dataset: {loglevel: loglevel}}, a));
       }
       else if (value[0] == 't') {
-        item = create_element('div', {'class': 'item', dataset: {loglevel: loglevel}}, value.slice(1));
+        context.children.appendChild(create_element('div', {'class': 'item', dataset: {loglevel: loglevel}}, value.slice(1)));
       }
       else
         throw `Cannot parse log line: ${line}.`;
-      context.children.appendChild(item);
       // Apply log level to parent contexts.
       // NOTE: `parseInt` returns `NaN` if the `parent` loglevel is undefined
       // and `NaN < loglevel` is false.
@@ -368,8 +391,7 @@ const IndentLog = class extends Log {
   }
   async check_progress() {
     const footer = document.getElementById('footer');
-    const footer_progress = create_element('div');
-    footer.appendChild(footer_progress);
+    const footer_status = document.getElementById('footer-status');
     while (true) {
       if (document.visibilityState == 'hidden') {
         // TODO: footer.classList.add('update-paused');
@@ -384,19 +406,19 @@ const IndentLog = class extends Log {
           this._available_bytes = data.logpos;
         if (this._fetched_bytes < this._available_bytes && this._data_arrived)
           this._data_arrived();
-        footer_progress.innerHTML = '';
+        footer_status.innerHTML = '';
         let first = true;
         for (const context of data.context) {
           if (!first)
-            footer_progress.appendChild(create_element('span', {'class': 'sep'}, ' • '));
+            footer_status.appendChild(create_element('span', {'class': 'sep'}, ' • '));
           first = false;
-          footer_progress.appendChild(create_element('span', {'class': 'context', innerHTML: context}));
+          footer_status.appendChild(create_element('span', {'class': 'context', innerHTML: context}));
         }
         if (data.text) {
           if (!first)
-            footer_progress.appendChild(create_element('span', {'class': 'sep'}, ' • '));
+            footer_status.appendChild(create_element('span', {'class': 'sep'}, ' • '));
           first = false;
-          footer_progress.appendChild(create_element('span', {'class': 'text', innerHTML: data.text}));
+          footer_status.appendChild(create_element('span', {'class': 'text', innerHTML: data.text}));
         }
         if (data.state == 'finished')
           break;
@@ -430,13 +452,16 @@ const IndentLog = class extends Log {
     // TODO: Check support for range request first, see https://developer.mozilla.org/en-US/docs/Web/HTTP/Range_requests
     while (!this.finished || this._fetched_bytes < this._available_bytes) {
       if (this._fetched_bytes < this._available_bytes) {
-        const response = await fetch('log.data', {cache: 'no-cache', headers: {'Range': `bytes=${this._fetched_bytes}-${this._available_bytes-1}`}});
-        if (response.status == 206 && response.headers.has('content-range') && response.headers.get('content-range').startsWith(`bytes ${this._fetched_bytes}-`)) {
+        // The one byte overlap is added to ensure a 206 partial response even
+        // if the server does not yet has the requested range (w/o overlap)
+        // available.
+        const response = await fetch('log.data', {cache: 'no-cache', headers: {'Range': `bytes=${this._fetched_bytes-1}-`}});
+        if (response.status == 206 && response.headers.has('content-range') && response.headers.get('content-range').startsWith(`bytes ${this._fetched_bytes-1}-`)) {
           const new_fetched_bytes = parseInt(response.headers.get('content-range').split('-')[1])+1;
-          if (new_fetched_bytes <= this._fetched_bytes)
+          if (new_fetched_bytes <= this._fetched_bytes-1)
             throw 'invalid partial response: content range end smaller than requested start';
           this._fetched_bytes = new_fetched_bytes;
-          this._pending_data += await response.text();
+          this._pending_data += (await response.text()).slice(1);
           while (true) {
             const i_newline = this._pending_data.indexOf('\n');
             if (i_newline < 0)
@@ -447,9 +472,12 @@ const IndentLog = class extends Log {
           if (document.body.classList.contains('follow'))
             this.root.scrollTop = this.root.scrollHeight - this.root.clientHeight;
         }
-        else {
+        else if (response.status == 200) {
           if (this._fetched_bytes == 0) {
             let data = await response.text();
+            const i_script = data.indexOf('<script id="logdata" type="application/octet-stream">');
+            const i_start = data.indexOf('\n', i_script) + 1;
+            data = data.slice(i_start);
             while (true) {
               const i_newline = data.indexOf('\n');
               if (i_newline < 0)
@@ -461,7 +489,11 @@ const IndentLog = class extends Log {
           document.getElementById('log').appendChild(create_element('div', {}, 'Cannot fetch a partial log. Please reload manually.'));
           break;
         }
-        await async_sleep(1000);
+        else {
+          document.getElementById('log').appendChild(create_element('div', {}, `Connection failed: ${response.status}.`));
+          break;
+        }
+        await async_sleep(500); // Rate limit.
       }
       else {
         await new Promise(resolve => {this._data_arrived = resolve;});
@@ -482,8 +514,8 @@ const Theater = class {
     this.info = {};
     this.touch_scroll_delta = 25;
   }
-  add_plot(href, anchor_id, category, context, label) {
-    const info = {href: href, anchor_id: anchor_id, category: category, index: this.plots_per_category[undefined].length, context: context, label: label};
+  add_plot(href, anchor_id, category, context, label, thumb) {
+    const info = {href: href, anchor_id: anchor_id, category: category, index: this.plots_per_category[undefined].length, context: context, label: label, thumb: thumb};
     this.plots_per_category[undefined].push(href);
     if (category) {
       if (!this.plots_per_category[category])
@@ -770,6 +802,12 @@ const visibilitychange_handler = function() {
     window.log._page_became_visible();
 };
 
+const footer_clicked = function(e) {
+  e.stopPropagation();
+  e.preventDefault();
+  window.log.toggle_follow();
+};
+
 window.addEventListener('load', function() {
   const grid = create_element('div', {'class': 'key_description'});
   const _add_key_description = function(cls, keys, description, _key) {
@@ -835,7 +873,10 @@ window.addEventListener('load', function() {
 
   window.log.init_log();
   if (document.body.classList.contains('indentlogger')) {
-    document.body.appendChild(create_element('div', {id: 'footer'}));
+    document.body.appendChild(create_element('div', {id: 'footer', events: {click: footer_clicked}},
+                                create_element('div', {id: 'footer-status'}),
+                                create_element('div', {id: 'footer-follow', 'class': 'icon small-icon-container'},
+                                  create_boxed_icon('M 4 -4 L -4 -4 L -4 4 M -4 0 L 1 0', {}))));
     window.log.check_progress();
     window.log.update_log();
     document.addEventListener('visibilitychange', visibilitychange_handler);
