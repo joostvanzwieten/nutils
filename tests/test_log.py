@@ -72,64 +72,29 @@ log_rich_output = '''\
 \033[K'''
 
 log_html = '''\
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"/>
-<title>test</title>
-<script src="2043fbdb3a0a60270015ae8b482d681e7a6577ac.js"></script>
-<link rel="stylesheet" type="text/css" href="cfe2e707bea7958e556c5719cc73f286b30e06de.css"/>
-<link rel="icon" sizes="48x48" type="image/png" href="1e8377c360c7a152793d936d03b0ea9e2fcb742b.png"/>
-</head>
-<body>
-<div id="log">
-<div class="context"><div class="title">iterator</div><div class="children">
-<div class="context"><div class="title">iter 0 (0%)</div><div class="children">
-<div class="item" data-loglevel="3">a</div>
-</div><div class="end"></div></div>
-<div class="context"><div class="title">iter 1 (33%)</div><div class="children">
-<div class="item" data-loglevel="3">b</div>
-</div><div class="end"></div></div>
-<div class="context"><div class="title">iter 2 (67%)</div><div class="children">
-<div class="item" data-loglevel="3">c</div>
-</div><div class="end"></div></div>
-</div><div class="end"></div></div>
-<div class="context"><div class="title">levels</div><div class="children">
-<div class="item" data-loglevel="0">error</div>
-<div class="item" data-loglevel="1">warning</div>
-<div class="item" data-loglevel="2">user</div>
-<div class="item" data-loglevel="3">info</div>
-</div><div class="end"></div></div>
-<div class="context"><div class="title">exception</div><div class="children">
-<div class="item" data-loglevel="0">ValueError(&#x27;test&#x27;,)
-  File &quot;??&quot;, line ??, in ??
-    raise ValueError(&#x27;test&#x27;)</div>
-</div><div class="end"></div></div>
-<div class="item" data-loglevel="3"><a href="test.png">test.png</a></div>
-<div class="item" data-loglevel="3">nonexistent.png</div>
-</div></body></html>
-'''
-
-log_indent = '''\
-c iterator
- c iter 0 (0%)
-  i a
- c iter 1 (33%)
-  i b
- c iter 2 (67%)
-  i c
-c levels
- e error
- w warning
- u user
- i info
-c exception
- e ValueError(&#x27;test&#x27;,)
- |   File &quot;??&quot;, line ??, in ??
- |     raise ValueError(&#x27;test&#x27;)
-i <a href="test.png">test.png</a>
-i nonexistent.png
+"use strict"; const co = data => window.log._parse_line_co(data); const cc = data => window.log._parse_line_cc(data); const t0 = data => window.log._parse_line_t0(data); const t1 = data => window.log._parse_line_t1(data); const t2 = data => window.log._parse_line_t2(data); const t3 = data => window.log._parse_line_t3(data); const t4 = data => window.log._parse_line_t4(data); const a0 = data => window.log._parse_line_a0(data); const a1 = data => window.log._parse_line_a1(data); const a2 = data => window.log._parse_line_a2(data); const a3 = data => window.log._parse_line_a3(data); const a4 = data => window.log._parse_line_a4(data);
+co("iterator")
+co("iter 0 (0%)")
+t3("a")
+cc(null)
+co("iter 1 (33%)")
+t3("b")
+cc(null)
+co("iter 2 (67%)")
+t3("c")
+cc(null)
+cc(null)
+co("levels")
+t0("error")
+t1("warning")
+t2("user")
+t3("info")
+cc(null)
+co("exception")
+t0("ValueError('test',)\\n  File \\"??\\", line ??, in ??\\n    raise ValueError('test')")
+cc(null)
+a3({"href": "test.png", "text": "test.png"})
+t3("nonexistent.png")
 '''
 
 def generate_log(short=False):
@@ -172,10 +137,10 @@ class logoutput(ContextTestCase):
   def test(self):
     kwargs = dict(title='test') if self.logcls == nutils.log.HtmlLog else {}
     with contextlib.ExitStack() as stack:
-      if issubclass(self.logcls, (nutils.log.HtmlLog, nutils.log.IndentLog)):
+      if issubclass(self.logcls, nutils.log.HtmlLog):
         with self.logcls(self.outdir, **kwargs):
           generate_log()
-        with open(os.path.join(self.outdir, 'log.html')) as stream:
+        with open(os.path.join(self.outdir, 'log.data')) as stream:
           value = stream.read()
       else:
         stream = io.StringIO()
@@ -193,7 +158,6 @@ _logoutput('stdout-replace-sys-stdout', nutils.log.StdoutLog, log_stdout, replac
 _logoutput('stdout-verbose3', nutils.log.StdoutLog, log_stdout3, verbose=3)
 _logoutput('rich_output', nutils.log.RichOutputLog, log_rich_output)
 _logoutput('html', nutils.log.HtmlLog, log_html)
-_logoutput('indent', nutils.log.IndentLog, log_indent)
 
 class tee_stdout_html(ContextTestCase):
 
@@ -206,7 +170,7 @@ class tee_stdout_html(ContextTestCase):
     with nutils.log.TeeLog(nutils.log.StdoutLog(stream_stdout), nutils.log.HtmlLog(self.outdir, title='test')):
       generate_log()
     self.assertEqual(stream_stdout.getvalue(), log_stdout)
-    with open(os.path.join(self.outdir, 'log.html')) as stream_html:
+    with open(os.path.join(self.outdir, 'log.data')) as stream_html:
       self.assertEqual(stream_html.read(), log_html)
 
 class recordlog(ContextTestCase):
@@ -251,8 +215,8 @@ def generate_exception(level=0):
     with self.assertRaises(TestException):
       with nutils.log.HtmlLog(self.outdir, title='test'):
         virtual_module['generate_exception']()
-    with open(os.path.join(self.outdir, 'log.html')) as stream:
-      self.assertIn('<div class="post-mortem">', stream.read())
+    with open(os.path.join(self.outdir, 'log.data')) as stream:
+      self.assertIn('EXHAUSTIVE STACK TRACE', stream.read())
 
 class move_outdir(ContextTestCase):
 
@@ -267,7 +231,7 @@ class move_outdir(ContextTestCase):
     with nutils.log.HtmlLog(self.outdira, title='test'):
       os.rename(self.outdira, self.outdirb)
       generate_log()
-    with open(os.path.join(self.outdirb, 'log.html')) as stream:
+    with open(os.path.join(self.outdirb, 'log.data')) as stream:
       self.assertEqual(stream.read(), log_html)
 
 class log_context_manager(TestCase):

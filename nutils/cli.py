@@ -171,10 +171,7 @@ def call(func, kwargs, scriptname, funcname=None):
   log_ = log.RichOutputLog() if config.richoutput else log.StdoutLog()
   if config.htmloutput:
     funcargs = [(param.name, kwargs.get(param.name, param.default), param.annotation) for param in inspect.signature(func).parameters.values()]
-    if False:
-      log_ = log.TeeLog(log_, log.HtmlLog(outdir, title=scriptname, scriptname=scriptname, funcname=funcname, funcargs=funcargs))
-    else:
-      log_ = log.TeeLog(log_, log.IndentLog(outdir, title=scriptname, scriptname=scriptname, funcname=funcname, funcargs=funcargs))
+    log_ = log.TeeLog(log_, log.HtmlLog(outdir, title=scriptname, scriptname=scriptname, funcname=funcname, funcargs=funcargs))
 
   try:
     old_sigint_handler = signal.signal(signal.SIGINT, _sigint_handler)

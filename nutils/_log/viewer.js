@@ -313,7 +313,7 @@ const IndentLog = class extends Log {
   }
   init_elements(collapsed) {
   }
-  _parse_line_o(title) {
+  _parse_line_co(title) {
     const parent_context = this._contexts[this._contexts.length-1];
     // const el_children = create_element('div', {'class': 'children'});
     const el_children = document.createElement('div');
@@ -336,7 +336,7 @@ const IndentLog = class extends Log {
     this._contexts.push({element: el_context, children: el_children, id: this._ncontexts, label: label});
     this._ncontexts += 1;
   }
-  _parse_line_c() {
+  _parse_line_cc() {
     this._contexts.pop();
   }
   _parse_line_t(loglevel, text) {
@@ -428,9 +428,8 @@ const IndentLog = class extends Log {
       const i_stop = data.indexOf('\n', i_start);
       if (i_stop < 0)
         break;
-      const i_open = data.indexOf('(', i_start);
-      const cmd = data.slice(i_start, i_open);
-      const arg = JSON.parse(data.slice(i_open+1, i_stop-1));
+      const cmd = data.slice(i_start, i_start+2);
+      const arg = JSON.parse(data.slice(i_start+3, i_stop-1));
       this['_parse_line_'+cmd](arg);
       i_start = i_stop + 1;
     }

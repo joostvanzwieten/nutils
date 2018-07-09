@@ -296,101 +296,6 @@ class RichOutputLog(StdoutLog):
       print(self._mkstr('progress', None), end='\r', file=self.stream)
 
 class HtmlLog(ContextTreeLog):
-  '''Output html nested lists.'''
-
-  def __init__(self, outdir, *, title='nutils', scriptname=None, funcname=None, funcargs=None):
-    self._outdir = outdir
-    self._title = title
-    self._scriptname = scriptname
-    self._funcname = funcname
-    self._funcargs = funcargs
-    super().__init__()
-
-  def _init_context(self, stack):
-    self._open = stack.enter_context(_makedirs(self._outdir, exist_ok=True))
-    # Copy dependencies.
-    paths = {}
-    for filename in 'favicon.png', 'viewer.css', 'viewer.js':
-      with builtins.open(os.path.join(os.path.dirname(__file__), '_log', filename), 'rb') as src:
-        data = src.read()
-      with self._open(hashlib.sha1(data).hexdigest() + '.' + filename.split('.')[1], 'wb', exists='skip') as dst:
-        dst.write(data)
-      paths[filename.replace('.', '_')] = dst.name
-    # Write header.
-    self._file = stack.enter_context(self._open('log.html', 'w', exists='rename'))
-    self._print('<!DOCTYPE html>')
-    self._print('<html>')
-    self._print(HTMLHEAD.format(title=html.escape(self._title), **paths))
-    body_attrs = []
-    if self._scriptname:
-      body_attrs.append(('data-scriptname', html.escape(self._scriptname)))
-      body_attrs.append(('data-latest', '../../../../log.html'))
-    if self._funcname:
-      body_attrs.append(('data-funcname', html.escape(self._funcname)))
-    self._print(''.join(['<body'] + [' {}="{}"'.format(*item) for item in body_attrs] + ['>']))
-    self._print('<div id="log">')
-    if self._funcargs:
-      self._print('<ul class="cmdline">')
-      for name, value, annotation in self._funcargs:
-        self._print(('  <li>{}={}<span class="annotation">{}</span></li>' if annotation is not inspect.Parameter.empty else '<li>{}={}</li>').format(*(html.escape(str(v)) for v in (name, value, annotation))))
-      self._print('</ul>')
-    stack.callback(self._print, '</div></body></html>')
-    stack.push(self._write_post_mortem)
-    return super()._init_context(stack)
-
-  def _print(self, *args, flush=False):
-    print(*args, file=self._file)
-    if flush:
-      self._file.flush()
-
-  def _print_push_context(self, title):
-    self._print('<div class="context"><div class="title">{}</div><div class="children">'.format(html.escape(title)), flush=True)
-
-  def _print_pop_context(self):
-    self._print('</div><div class="end"></div></div>', flush=True)
-
-  def _print_item(self, level, text, escape=True):
-    if escape:
-      text = html.escape(text)
-    self._print('<div class="item" data-loglevel="{}">{}</div>'.format(LEVELS.index(level), text), flush=True)
-
-  def _write_post_mortem(self, etype, value, tb):
-    'write exception nfo to html log'
-
-    if etype in (None, SystemExit):
-      return
-    if etype in (KeyboardInterrupt, bdb.BdbQuit):
-      self.write('error', 'killed by user')
-      return
-
-    try:
-      msg = ''.join(traceback.format_exception(etype, value, tb))
-    except Exception as e:
-      msg = '{} (traceback failed: {})'.format(value, e)
-    self.write('error', msg)
-
-    _fmt = lambda obj: '=' + ''.join(s.strip() for s in repr(obj).split('\n'))
-    self._print('<div class="post-mortem">')
-    self._print('EXHAUSTIVE STACK TRACE')
-    self._print()
-    for frame, filename, lineno, function, code_context, index in inspect.getinnerframes(tb):
-      self._print('File "{}", line {}, in {}'.format(filename, lineno, function))
-      self._print(html.escape(textwrap.fill(inspect.formatargvalues(*inspect.getargvalues(frame),formatvalue=_fmt), initial_indent=' ', subsequent_indent='  ', width=80)))
-      if code_context:
-        self._print()
-        for line in code_context:
-          self._print(html.escape(textwrap.fill(line.strip(), initial_indent='>>> ', subsequent_indent='    ', width=80)))
-      self._print()
-    self._print('</div>', flush=True)
-
-  @contextlib.contextmanager
-  def open(self, filename, mode, level, exists):
-    _check_filemode(mode)
-    with self._open(filename, mode, exists) as f:
-      yield f
-    self._print_item(level, '<a href="{href}">{name}</a>'.format(href=urllib.parse.quote(f.name), name=html.escape(filename)), escape=False)
-
-class IndentLog(ContextTreeLog):
   '''Output indented html snippets.'''
 
   def __init__(self, outdir, *, progressinterval=None, title='nutils', scriptname=None, funcname=None, funcargs=None):
@@ -410,10 +315,10 @@ class IndentLog(ContextTreeLog):
     self._progressfile = stack.enter_context(self._open('progress.json', 'w', exists='overwrite'))
     # Write logfile head.
     self._print('"use strict";', end='')
-    for cmd in ['o', 'c']:
-      self._print(' const {cmd} = (data) => {{ window.log._parse_line_{cmd}(data); }};'.format(cmd=cmd), end='')
+    for cmd in ['co', 'cc']:
+      self._print(' const {cmd} = data => window.log._parse_line_{cmd}(data);'.format(cmd=cmd), end='')
     for cmd, ilevel in itertools.product('ta', builtins.range(len(LEVELS))):
-      self._print(' const {cmd}{ilevel} = (data) => {{ window.log._parse_line_{cmd}({ilevel}, data); }};'.format(cmd=cmd, ilevel=ilevel), end='')
+      self._print(' const {cmd}{ilevel} = data => window.log._parse_line_{cmd}{ilevel}(data);'.format(cmd=cmd, ilevel=ilevel), end='')
     self._print()
     logfile_offset = self._logfile.tell()
     # Copy dependencies.
@@ -437,10 +342,6 @@ class IndentLog(ContextTreeLog):
         body_attrs.append(('data-funcname', html.escape(self._funcname)))
       print(''.join(['<body'] + [' {}="{}"'.format(*item) for item in body_attrs] + ['></body>']), file=f)
       print('</html>', file=f)
-    # NOTE: `_finish_progressfile` should be called after anything else that
-    # updates the progress file, like `write_post_mortem`, hence added to the
-    # stack before.  Otherwise the `state="finished"` part written by
-    # `_finish_progressfile` will be removed.
     stack.push(self._write_footers)
     super()._init_context(stack)
 
@@ -457,6 +358,21 @@ class IndentLog(ContextTreeLog):
       except Exception as e:
         msg = '{} (traceback failed: {})'.format(value, e)
       self.write('error', msg)
+      _fmt = lambda obj: '=' + ''.join( s.strip() for s in repr(obj).split('\n') )
+
+      f_est = io.StringIO()
+      print('EXHAUSTIVE STACK TRACE', file=f_est)
+      print(file=f_est)
+      for frame, filename, lineno, function, code_context, index in inspect.getinnerframes( tb ):
+        print('File "{}", line {}, in {}'.format(filename, lineno, function), file=f_est)
+        print(textwrap.fill(inspect.formatargvalues(*inspect.getargvalues(frame),formatvalue=_fmt), initial_indent=' ', subsequent_indent='  ', width=80), file=f_est)
+        if code_context:
+          print(file=f_est)
+          for line in code_context:
+            print(textwrap.fill(line.strip(), initial_indent='>>> ', subsequent_indent='    ', width=80), file=f_est)
+        print(file=f_est)
+      self.write('debug', f_est.getvalue())
+
     self._logfile.flush()
     self._progressfile.seek(0)
     self._progressfile.truncate(0)
@@ -469,10 +385,10 @@ class IndentLog(ContextTreeLog):
 
   def _print_push_context(self, title):
     assert isinstance(title, str)
-    self._print('o({})'.format(json.dumps(title)))
+    self._print('co({})'.format(json.dumps(title)))
 
   def _print_pop_context(self):
-    self._print('c(null)')
+    self._print('cc(null)')
 
   def _print_item(self, level, text):
     assert isinstance(text, str)
@@ -508,8 +424,7 @@ class IndentLog(ContextTreeLog):
       # Try to make a thumbnail.
       if filename.endswith(('.png', '.jpg', '.jpeg')):
         f.seek(0)
-        if True:
-        #try:
+        try:
           import PIL.Image
           im = PIL.Image.open(f)
           data['size'] = im.size
@@ -518,8 +433,8 @@ class IndentLog(ContextTreeLog):
             im.save(f_thumb, 'PNG')
           data['thumb'] = urllib.parse.quote(f_thumb.name)
           data['thumb_size'] = im.size
-        #except:
-        #  pass
+        except:
+          pass
     self._print('a{}({})'.format(LEVELS.index(level), json.dumps(data, sort_keys=True)))
 
 class TeeLog(Log):
