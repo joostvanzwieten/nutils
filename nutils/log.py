@@ -399,7 +399,6 @@ class IndentLog(ContextTreeLog):
     self._scriptname = scriptname
     self._funcname = funcname
     self._funcargs = funcargs
-    self._nprintedcontexts = 0
     self._progressupdate = 0 # progress update interval in seconds
     self._progressinterval = progressinterval or getattr(config, 'progressinterval', 1)
     super().__init__()
@@ -407,9 +406,16 @@ class IndentLog(ContextTreeLog):
   def _init_context(self, stack):
     mkdirs = _makedirs(self._outdir, exist_ok=True)
     self._open = stack.enter_context(mkdirs)
-    self._logfile = stack.enter_context(self._open('log.html', 'w', exists='overwrite'))
-    mkdirs.link(self._logfile.name, 'log.data')
+    self._logfile = stack.enter_context(self._open('log.data', 'w', exists='overwrite'))
     self._progressfile = stack.enter_context(self._open('progress.json', 'w', exists='overwrite'))
+    # Write logfile head.
+    self._print('"use strict";', end='')
+    for cmd in ['o', 'c']:
+      self._print(' const {cmd} = (data) => {{ window.log._parse_line_{cmd}(data); }};'.format(cmd=cmd), end='')
+    for cmd, ilevel in itertools.product('ta', builtins.range(len(LEVELS))):
+      self._print(' const {cmd}{ilevel} = (data) => {{ window.log._parse_line_{cmd}({ilevel}, data); }};'.format(cmd=cmd, ilevel=ilevel), end='')
+    self._print()
+    logfile_offset = self._logfile.tell()
     # Copy dependencies.
     paths = {}
     for filename in 'favicon.png', 'viewer.css', 'viewer.js':
@@ -418,19 +424,19 @@ class IndentLog(ContextTreeLog):
       with self._open(hashlib.sha1(data).hexdigest() + '.' + filename.split('.')[1], 'wb', exists='skip') as dst:
         dst.write(data)
       paths[filename.replace('.', '_')] = dst.name
-    # Write log head.
-    self._print('<!DOCTYPE html>')
-    self._print('<html>')
-    self._print(HTMLHEAD.format(title=html.escape(self._title), **paths))
-    body_attrs = [('class', 'indentlogger')]
-    if self._scriptname:
-      body_attrs.append(('data-scriptname', html.escape(self._scriptname)))
-      body_attrs.append(('data-latest', '../../../../log.html'))
-    if self._funcname:
-      body_attrs.append(('data-funcname', html.escape(self._funcname)))
-    self._print(''.join(['<body'] + [' {}="{}"'.format(*item) for item in body_attrs] + ['>']))
-    self._print('<script id="logdata" type="application/octet-stream">', end='')
-    self._print('{}'.format(self._logfile.tell()))
+    # Write log.html.
+    with self._open('log.html', 'w', exists='overwrite') as f:
+      print('<!DOCTYPE html>', file=f)
+      print('<html>', file=f)
+      print(HTMLHEAD.format(title=html.escape(self._title), **paths), file=f)
+      body_attrs = [('class', 'indentlogger'), ('data-logfileoffset', str(logfile_offset))]
+      if self._scriptname:
+        body_attrs.append(('data-scriptname', html.escape(self._scriptname)))
+        body_attrs.append(('data-latest', '../../../../log.html'))
+      if self._funcname:
+        body_attrs.append(('data-funcname', html.escape(self._funcname)))
+      print(''.join(['<body'] + [' {}="{}"'.format(*item) for item in body_attrs] + ['></body>']), file=f)
+      print('</html>', file=f)
     # NOTE: `_finish_progressfile` should be called after anything else that
     # updates the progress file, like `write_post_mortem`, hence added to the
     # stack before.  Otherwise the `state="finished"` part written by
@@ -462,14 +468,15 @@ class IndentLog(ContextTreeLog):
     print(*args, file=self._logfile, **kwargs)
 
   def _print_push_context(self, title):
-    self._print(urllib.parse.quote('{}c{}'.format(self._nprintedcontexts, title)))
-    self._nprintedcontexts += 1
+    assert isinstance(title, str)
+    self._print('o({})'.format(json.dumps(title)))
 
   def _print_pop_context(self):
-    self._nprintedcontexts -= 1
+    self._print('c(null)')
 
   def _print_item(self, level, text):
-    self._print(urllib.parse.quote('{}{}t{}'.format(self._nprintedcontexts, level[0], text)))
+    assert isinstance(text, str)
+    self._print('t{}({})'.format(LEVELS.index(level), json.dumps(text)))
     self._print_progress(level, text.split('\n', 1)[0])
     self._progressupdate = 0
 
@@ -513,7 +520,7 @@ class IndentLog(ContextTreeLog):
           data['thumb_size'] = im.size
         #except:
         #  pass
-    self._print(urllib.parse.quote('{}{}a{}'.format(self._nprintedcontexts, level[0], json.dumps(data, sort_keys=True))))
+    self._print('a{}({})'.format(LEVELS.index(level), json.dumps(data, sort_keys=True)))
 
 class TeeLog(Log):
   '''Simultaneously interface multiple logs'''
@@ -713,9 +720,6 @@ class _makedirs:
   def _open(self, name, *args):
     return os.open(name, *args, dir_fd=self.path) if isinstance(self.path, int) \
       else os.open(os.path.join(self.path, name), *args)
-  def link(self, src, dst):
-    return os.link(src, dst, src_dir_fd=self.path, dst_dir_fd=self.path) if isinstance(self.path, int) \
-      else os.link(os.path.join(self.path, src), os.path.join(self.path, dst))
   def open(self, filename, mode, exists):
     if exists not in ('overwrite', 'rename', 'skip'):
       raise ValueError('invalid exists: {!r}'.format(exists))

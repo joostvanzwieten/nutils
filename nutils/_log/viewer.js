@@ -307,26 +307,108 @@ const IndentLog = class extends Log {
     this.root = document.getElementById('log');
     this._fetched_bytes = 0;
     this._available_bytes = 0;
-    this._pending_data = '';
-    this._contexts = [];
+    this._contexts = [{element: null, children: this.root, id: undefined, label: ''}];
     this._ncontexts = 0;
     this._nanchors = 0;
   }
   init_elements(collapsed) {
-    // Make contexts clickable.
-    for (const title of document.querySelectorAll('#log .context > .title'))
-      title.addEventListener('click', this._context_toggle_collapsed);
   }
+  _parse_line_o(title) {
+    const parent_context = this._contexts[this._contexts.length-1];
+    // const el_children = create_element('div', {'class': 'children'});
+    const el_children = document.createElement('div');
+    el_children.classList.add('children');
+    //const el_title = create_element('div', {'class': 'title', events: {click: this._context_toggle_collapsed}}, title);
+    const el_title = document.createElement('div');
+    el_title.classList.add('title');
+    el_title.addEventListener('click', this._context_toggle_collapsed);
+    el_title.appendChild(document.createTextNode(title));
+    const label = parent_context.label + '/' + title;
+    // const el_context = create_element('div', {'class': 'context', dataset: {id: this._ncontexts, label: (parent_context.element && parent_context.element.dataset.label ? parent_context.element.label + '/' : '') + title}}, el_title, el_children);
+    const el_context = document.createElement('div');
+    el_context.id = this._ncontexts;
+    el_context.classList.add('context');
+    //el_context.dataset.id = this._ncontexts;
+    //el_context.dataset.label = (parent_context.element && parent_context.element.dataset.label ? parent_context.element.label + '/' : '') + title;
+    el_context.appendChild(el_title);
+    el_context.appendChild(el_children);
+    parent_context.children.appendChild(el_context);
+    this._contexts.push({element: el_context, children: el_children, id: this._ncontexts, label: label});
+    this._ncontexts += 1;
+  }
+  _parse_line_c() {
+    this._contexts.pop();
+  }
+  _parse_line_t(loglevel, text) {
+    const parent_context = this._contexts[this._contexts.length-1];
+    // parent_context.children.appendChild(create_element('div', {'class': 'item', dataset: {loglevel: loglevel}}, text));
+    const el_item = document.createElement('div');
+    el_item.classList.add('item');
+    el_item.dataset.loglevel = loglevel;
+    el_item.innerText = text;
+    parent_context.children.appendChild(el_item);
+    // Apply log level to parent contexts.
+    // NOTE: `parseInt` returns `NaN` if the `parent` loglevel is undefined
+    // and `NaN < loglevel` is false.
+    for (let i = this._contexts.length-1; i >= 1; i -= 1) {
+      if (parseInt(this._contexts[i].element.dataset.loglevel) <= loglevel)
+        break;
+      this._contexts[i].element.dataset.loglevel = loglevel;
+    }
+  }
+  _parse_line_a(loglevel, data) {
+    const parent_context = this._contexts[this._contexts.length-1];
+    const a = this._create_anchor(data, parent_context.id, parent_context.label.slice(1));
+    // TODO: also check the previous item has the same loglevel
+    if (parent_context.children.lastElementChild && parent_context.children.lastElementChild.classList.contains('item-a') && parent_context.children.lastElementChild.dataset.loglevel == loglevel)
+      parent_context.children.lastElementChild.appendChild(a);
+    else {
+      // parent_context.children.appendChild(create_element('div', {'class': 'item', dataset: {loglevel: loglevel}}, a));
+      const el_item = document.createElement('div');
+      el_item.classList.add('item');
+      el_item.classList.add('item-a');
+      el_item.dataset.loglevel = loglevel;
+      el_item.appendChild(a);
+      parent_context.children.appendChild(el_item);
+    }
+    // Apply log level to parent contexts.
+    // NOTE: `parseInt` returns `NaN` if the `parent` loglevel is undefined
+    // and `NaN < loglevel` is false.
+    for (let i = this._contexts.length-1; i >= 1; i -= 1) {
+      if (parseInt(this._contexts[i].element.dataset.loglevel) <= loglevel)
+        break;
+      this._contexts[i].element.dataset.loglevel = loglevel;
+    }
+  }
+  _parse_line_t0(text) { this._parse_line_t(0, text); }
+  _parse_line_t1(text) { this._parse_line_t(1, text); }
+  _parse_line_t2(text) { this._parse_line_t(2, text); }
+  _parse_line_t3(text) { this._parse_line_t(3, text); }
+  _parse_line_t4(text) { this._parse_line_t(4, text); }
+  _parse_line_a0(text) { this._parse_line_a(0, text); }
+  _parse_line_a1(text) { this._parse_line_a(1, text); }
+  _parse_line_a2(text) { this._parse_line_a(2, text); }
+  _parse_line_a3(text) { this._parse_line_a(3, text); }
+  _parse_line_a4(text) { this._parse_line_a(4, text); }
   _create_anchor(data, context_id, context_label) {
-    const a = create_element('a', {href: data.href, dataset: {href: data.href}});
+    // const a = create_element('a', {href: data.href, dataset: {href: data.href}});
+    const a = document.createElement('a');
+    a.href = data.href;
+    a.dataset.href = data.href;
     if (data.thumb) {
-      const im = create_element('img', {src: data.thumb});
+      // const im = create_element('img', {src: data.thumb});
+      const im = document.createElement('img');
       if (data.thumb_size) {
         im.width = data.thumb_size[0];
         im.height = data.thumb_size[1];
       }
+      im.src = data.thumb;
       a.appendChild(im);
-      a.appendChild(create_element('div', {'class': 'name'}, data.text));
+      // a.appendChild(create_element('div', {'class': 'name'}, data.text));
+      const el_text = document.createElement('div');
+      el_text.classList.add('name');
+      el_text.appendChild(document.createTextNode(data.text));
+      a.appendChild(el_text);
       a.classList.add('thumb');
     }
     else
@@ -334,60 +416,90 @@ const IndentLog = class extends Log {
     const suffix = VIEWABLE.filter(suffix => data.text.endsWith(suffix));
     if (!suffix.length)
       return a;
-    const stem = data.text.slice(0, data.text.length - suffix[0].length);
-    if (!stem)
-      return a;
-    const category = (stem.match(/^(.*?)[0-9]*$/) || [null, null])[1];
     a.addEventListener('click', this._plot_clicked);
     a.id = `plot-${this._nanchors}`;
     this._nanchors += 1;
-    theater.add_plot(data.href, a.id, category, context_id, (context_label ? context_label + '/' : '') + stem);
+    theater.add_plot(data.href, a.id, data.text, context_id, (context_label ? context_label + '/' : '') + data.text);
     return a;
   }
-  _parse_line(line) {
-    const item = decodeURIComponent(line).match(/^([0-9]+)([a-z])(.*)$/);
-    const ncontexts = parseInt(item[1]);
-    const type = item[2];
-    const value = item[3];
-    // Close remaining contexts.
-    if (ncontexts < this._contexts.length)
-      this._contexts = this._contexts.slice(0, ncontexts);
-    const context = this._contexts.length > 0 ? this._contexts[this._contexts.length-1] : {element: null, children: this.root};
-    const loglevel = 'ewuid'.indexOf(type);
-    if (type == 'c') {
-      const children = create_element('div', {'class': 'children'});
-      const title = create_element('div', {'class': 'title', events: {click: this._context_toggle_collapsed}}, value);
-      const element = create_element('div', {'class': 'context', dataset: {id: this._ncontexts, label: (context.element && context.element.dataset.label ? context.element.label + '/' : '') + value}}, title, children);
-      context.children.appendChild(element);
-      this._contexts.push({element: element, children: children});
-      this._ncontexts += 1;
+  _parse_partial_log(data) {
+    let i_start = 0;
+    while (true) {
+      const i_stop = data.indexOf('\n', i_start);
+      if (i_stop < 0)
+        break;
+      const i_open = data.indexOf('(', i_start);
+      const cmd = data.slice(i_start, i_open);
+      const arg = JSON.parse(data.slice(i_open+1, i_stop-1));
+      this['_parse_line_'+cmd](arg);
+      i_start = i_stop + 1;
     }
-    else if (loglevel >= 0) {
-      if (value[0] == 'a') {
-        const context_id = context.element ? context.element.dataset.id : undefined;
-        const context_label = context.element && context.element.dataset.label ? context.element.dataset.label : '';
-        const a = this._create_anchor(JSON.parse(value.slice(1)), context_id, context_label);
-        if (context.children.lastElementChild && context.children.lastElementChild.querySelector('a.thumb'))
-          context.children.lastElementChild.appendChild(a);
-        else
-          context.children.appendChild(create_element('div', {'class': 'item', dataset: {loglevel: loglevel}}, a));
+    if (document.body.classList.contains('follow'))
+      this.root.scrollTop = this.root.scrollHeight - this.root.clientHeight;
+    return data.slice(i_start);
+  }
+  async update_log() {
+    // Continuously fetch and parse tails of `logdata_url`.
+    if (this._fetched_bytes != 0)
+      throw 'This function can be called only once.';
+    this._fetched_bytes = parseInt(document.body.dataset.logfileoffset);
+    let pending_data = '';
+    const logdata_url = 'log.data';
+    let irequest = 0;
+    while (!this.finished || this._fetched_bytes < this._available_bytes) {
+      if (this._fetched_bytes < this._available_bytes) {
+        // Try a partial fetch.  The one byte overlap is to ensure the server has
+        // data available: we have read this byte before.  Otherwise the server
+        // might respond with 200.
+        try {
+          irequest += 1;
+          const request_start = this._fetched_bytes - 1;
+          const response = await fetch(logdata_url, {cache: 'no-cache', headers: {'Range': `bytes=${request_start}-`}});
+          if (response.status == 206) {
+            // Parse the 'Content-Range' header and update the `this._fetched_bytes` pointer.
+            const response_range = (response.headers.get('content-range') || '').match(/^bytes ([0-9]+)-([0-9]+)\/[0-9]+$/);
+            if (!response_range)
+              throw `Invalid 206 response: Cannot parse Content-Range header: ${response.headers.get('content-range')}.`;
+            const response_start = parseInt(response_range[1]);
+            const response_stop = parseInt(response_range[2]);
+            if (response_start > request_start || response_stop < response_start)
+              throw `Invalid 206 response: Content range ${response.headers.get('content-range')} smaller than requested (bytes=${request_start}-).`;
+            this._fetched_bytes = response_stop + 1; // `response_stop` refers to the last byte sent, hence the `+ 1`.
+            // Fetch and parse the response data.
+            const response_data = await response.text();
+            pending_data += this._parse_partial_log(pending_data + response_data.slice(1));
+          }
+          else if (response.status == 200) {
+            console.warn(`Requested a partial file (Range: bytes=${start}-) but got response 200.  Updates are turned off.`);
+            if (irequest == 1) {
+              // First request failed.  Parse data and stop updating.
+              this._parse_partial_log(await response.text());
+            }
+            else {
+              // Subsequent request failed.  Since we can't reliably slice the
+              // response data ourselves --- we get a unicode string --- ignore
+              // the response and notify the user.
+              document.body.appendChild(document.createTextNode('Received invalid response from server.  Updates are turned off.'));
+            }
+            return;
+          }
+          else {
+            document.body.appendChild(document.createTextNode(`Received invalid response from server: ${response.status}.  Updates are turned off.`));
+            return;
+          }
+        }
+        catch (e) {
+          console.warn('fetch failed:', e);
+          document.body.appendChild(document.createTextNode('Exception in update handler.  Updates are turned off.'));
+          return
+        }
+        await async_sleep(500); // Rate limit.
       }
-      else if (value[0] == 't') {
-        context.children.appendChild(create_element('div', {'class': 'item', dataset: {loglevel: loglevel}}, value.slice(1)));
-      }
-      else
-        throw `Cannot parse log line: ${line}.`;
-      // Apply log level to parent contexts.
-      // NOTE: `parseInt` returns `NaN` if the `parent` loglevel is undefined
-      // and `NaN < loglevel` is false.
-      for (let i = this._contexts.length-1; i >= 0; i -= 1) {
-        if (parseInt(this._contexts[i].element.dataset.loglevel) <= loglevel)
-          break;
-        this._contexts[i].element.dataset.loglevel = loglevel;
+      else {
+        await new Promise(resolve => {this._data_arrived = resolve;});
+        delete this._data_arrived;
       }
     }
-    else
-      throw `Cannot parse log line: ${line}.`;
   }
   async check_progress() {
     const footer = document.getElementById('footer');
@@ -424,82 +536,11 @@ const IndentLog = class extends Log {
           break;
       }
       catch (e) {
-        console.log(`failed to fetch/process progress file: ${e}`);
+        console.warn(`failed to fetch/process progress file: ${e}`);
       }
       await async_sleep(1000);
     }
     this.finished = true;
-  }
-  init_log() {
-    const logdata = document.getElementById('logdata');
-    if (logdata == null)
-      throw 'cannot find data section';
-    this._pending_data = logdata.textContent;
-    const i_newline = this._pending_data.indexOf('\n');
-    if (i_newline < 0)
-      throw 'cannot find data offset';
-    this._fetched_bytes = parseInt(this._pending_data.slice(0, i_newline)) + this._pending_data.length;
-    this._pending_data = this._pending_data.slice(i_newline+1);
-    while (true) {
-      const i_newline = this._pending_data.indexOf('\n');
-      if (i_newline < 0)
-        break;
-      this._parse_line(this._pending_data.slice(0, i_newline));
-      this._pending_data = this._pending_data.slice(i_newline+1);
-    }
-  }
-  async update_log() {
-    // TODO: Check support for range request first, see https://developer.mozilla.org/en-US/docs/Web/HTTP/Range_requests
-    while (!this.finished || this._fetched_bytes < this._available_bytes) {
-      if (this._fetched_bytes < this._available_bytes) {
-        // The one byte overlap is added to ensure a 206 partial response even
-        // if the server does not yet has the requested range (w/o overlap)
-        // available.
-        const response = await fetch('log.data', {cache: 'no-cache', headers: {'Range': `bytes=${this._fetched_bytes-1}-`}});
-        if (response.status == 206 && response.headers.has('content-range') && response.headers.get('content-range').startsWith(`bytes ${this._fetched_bytes-1}-`)) {
-          const new_fetched_bytes = parseInt(response.headers.get('content-range').split('-')[1])+1;
-          if (new_fetched_bytes <= this._fetched_bytes-1)
-            throw 'invalid partial response: content range end smaller than requested start';
-          this._fetched_bytes = new_fetched_bytes;
-          this._pending_data += (await response.text()).slice(1);
-          while (true) {
-            const i_newline = this._pending_data.indexOf('\n');
-            if (i_newline < 0)
-              break;
-            this._parse_line(this._pending_data.slice(0, i_newline));
-            this._pending_data = this._pending_data.slice(i_newline+1);
-          }
-          if (document.body.classList.contains('follow'))
-            this.root.scrollTop = this.root.scrollHeight - this.root.clientHeight;
-        }
-        else if (response.status == 200) {
-          if (this._fetched_bytes == 0) {
-            let data = await response.text();
-            const i_script = data.indexOf('<script id="logdata" type="application/octet-stream">');
-            const i_start = data.indexOf('\n', i_script) + 1;
-            data = data.slice(i_start);
-            while (true) {
-              const i_newline = data.indexOf('\n');
-              if (i_newline < 0)
-                break;
-              this._parse_line(data.slice(0, i_newline));
-              data = data.slice(i_newline+1);
-            }
-          }
-          document.getElementById('log').appendChild(create_element('div', {}, 'Cannot fetch a partial log. Please reload manually.'));
-          break;
-        }
-        else {
-          document.getElementById('log').appendChild(create_element('div', {}, `Connection failed: ${response.status}.`));
-          break;
-        }
-        await async_sleep(500); // Rate limit.
-      }
-      else {
-        await new Promise(resolve => {this._data_arrived = resolve;});
-        delete this._data_arrived;
-      }
-    }
   }
 };
 
@@ -871,7 +912,6 @@ window.addEventListener('load', function() {
   apply_state(state);
   state_control = 'enabled';
 
-  window.log.init_log();
   if (document.body.classList.contains('indentlogger')) {
     document.body.appendChild(create_element('div', {id: 'footer', events: {click: footer_clicked}},
                                 create_element('div', {id: 'footer-status'}),
@@ -879,6 +919,7 @@ window.addEventListener('load', function() {
                                   create_boxed_icon('M 4 -4 L -4 -4 L -4 4 M -4 0 L 1 0', {}))));
     window.log.check_progress();
     window.log.update_log();
+    //document.head.appendChild(create_element('script', {src: 'log.data'}));
     document.addEventListener('visibilitychange', visibilitychange_handler);
   }
 });

@@ -104,8 +104,9 @@ body.theater-locked #theater.overview img.plot.selected_category:not(.selected) 
 
 body:not(.follow) #footer-follow { display: none; }
 
-a.thumb { display: grid; grid: max-content max-content / 128px; float: left; }
+a.thumb { display: grid; grid: max-content max-content / 128px; }
 a.thumb .name { text-align: center; }
+#log .item-a { display: flex; }
 
 /* vim: sts=2:sw=2:et
  */
