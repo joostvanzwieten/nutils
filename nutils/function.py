@@ -133,6 +133,9 @@ class Evaluable(types.Singleton):
     else:
       return '%{}'.format(index)
     asciitree = self._asciitree_str()
+    degree = getattr(self, 'degree', None)
+    if degree is not None:
+      asciitree = '{}, degree: {}'.format(asciitree, degree)
     if config.richoutput:
       select = '├ ', '└ '
       bridge = '│ ', '  '
@@ -579,6 +582,15 @@ class Array(Evaluable):
   def _asciitree_str(self):
     return '{}({})'.format(type(self).__name__, ','.join(['?' if isarray(sh) else str(sh) for sh in self.shape]))
 
+  @property
+  def degree(self):
+    '''
+    The (maximum) degree of this array function per element, as a positive
+    integer or ``float('inf')``.
+    '''
+
+    return float('inf')
+
   # simplifications
   _multiply = lambda self, other: None
   _transpose = lambda self, axes: None
@@ -631,6 +643,10 @@ class Normal(Array):
     Gder = derivative(G, var, seen)
     nGder = matmat(self, Gder)
     return -matmat(G, inverse(GG), nGder)
+
+  @property
+  def degree(self):
+    return float('inf')
 
 class Constant(Array):
 
@@ -729,6 +745,10 @@ class Constant(Array):
   def _determinant(self):
     return Constant(numpy.linalg.det(self.value))
 
+  @property
+  def degree(self):
+    return 0
+
 class DofMap(Array):
 
   __slots__ = 'dofs', 'index'
@@ -748,6 +768,10 @@ class DofMap(Array):
   def evalf(self, index):
     index, = index
     return self.dofs[index][_]
+
+  @property
+  def degree(self):
+    return 0
 
 class InsertAxis(Array):
 
@@ -844,6 +868,10 @@ class InsertAxis(Array):
     else:
       return InsertAxis(Unravel(self.func, axis-(axis>self.axis), shape), self.axis+(axis<self.axis), self.length)
 
+  @property
+  def degree(self):
+    return self.func.degree
+
 class Transpose(Array):
 
   __slots__ = 'func', 'axes'
@@ -916,6 +944,10 @@ class Transpose(Array):
   def _mask(self, maskvec, axis):
     return Transpose(Mask(self.func, maskvec, self.axes[axis]), self.axes)
 
+  @property
+  def degree(self):
+    return self.func.degree
+
 class Get(Array):
 
   __slots__ = 'func', 'axis', 'item'
@@ -964,6 +996,10 @@ class Get(Array):
   def _take(self, indices, axis):
     return Get(Take(self.func, indices, axis+(axis>=self.axis)), self.axis, self.item)
 
+  @property
+  def degree(self):
+    return self.func.degree
+
 class Product(Array):
 
   __slots__ = 'func',
@@ -1000,6 +1036,13 @@ class Product(Array):
     func = Get(self.func, i, item)
     return Product(func)
 
+  @property
+  def degree(self):
+    if numeric.isint(self.func.shape[-1]):
+      return self.func.degree*self.func.shape[-1]
+    else:
+      return float('inf')
+
 class ApplyTransforms(Array):
 
   __slots__ = 'trans',
@@ -1017,6 +1060,10 @@ class ApplyTransforms(Array):
       return LinearFrom(self.trans, len(var))
     return zeros(self.shape+var.shape)
 
+  @property
+  def degree(self):
+    return 1
+
 class LinearFrom(Array):
 
   __slots__ = ()
@@ -1032,6 +1079,10 @@ class LinearFrom(Array):
 
   def _derivative(self, var, seen):
     return zeros(self.shape+var.shape)
+
+  @property
+  def degree(self):
+    return 0
 
 class Inverse(Array):
   '''
@@ -1072,6 +1123,10 @@ class Inverse(Array):
 
   def _determinant(self):
     return reciprocal(Determinant(self.func))
+
+  @property
+  def degree(self):
+    return 0 if self.func.degree == 0 else float('inf')
 
 class Concatenate(Array):
 
@@ -1242,6 +1297,10 @@ class Concatenate(Array):
     if axis != self.axis:
       return Concatenate([Unravel(func, axis, shape) for func in self.funcs], self.axis+(self.axis>axis))
 
+  @property
+  def degree(self):
+    return builtins.max(func.degree for func in self.funcs)
+
 class Interpolate(Array):
   'interpolate uniformly spaced data; stepwise for now'
 
@@ -1261,6 +1320,10 @@ class Interpolate(Array):
 
   def evalf(self, x):
     return numpy.interp(x, self.xp, self.fp, self.left, self.right)
+
+  @property
+  def degree(self):
+    return float('inf')
 
 class Cross(Array):
 
@@ -1292,6 +1355,10 @@ class Cross(Array):
     return cross(self.func1[ext], derivative(self.func2, var, seen), axis=self.axis) \
          - cross(self.func2[ext], derivative(self.func1, var, seen), axis=self.axis)
 
+  @property
+  def degree(self):
+    return self.func1.degree + self.func2.degree
+
 class Determinant(Array):
 
   __slots__ = 'func',
@@ -1321,6 +1388,10 @@ class Determinant(Array):
     G = derivative(self.func, var, seen)
     ext = (...,)+(_,)*var.ndim
     return self[ext] * sum(Finv[ext] * G, axis=[-2-var.ndim,-1-var.ndim])
+
+  @property
+  def degree(self):
+    return 0 if self.func.degree == 0 else float('inf')
 
 class Multiply(Array):
 
@@ -1412,6 +1483,11 @@ class Multiply(Array):
     if func1pow is not None and func2pow is not None:
       return Multiply([func1pow, func2pow])
 
+  @property
+  def degree(self):
+    func1, func2 = self.funcs
+    return func1.degree + func2.degree
+
 class Add(Array):
 
   __slots__ = 'funcs',
@@ -1480,6 +1556,11 @@ class Add(Array):
   def _mask(self, maskvec, axis):
     func1, func2 = self.funcs
     return Add([Mask(func1, maskvec, axis), Mask(func2, maskvec, axis)])
+
+  @property
+  def degree(self):
+    func1, func2 = self.funcs
+    return builtins.max(func1.degree, func2.degree)
 
 class BlockAdd(Array):
   'block addition (used for DG)'
@@ -1552,6 +1633,10 @@ class BlockAdd(Array):
       for idim in range(self.ndim):
         gathered = _concatblocks(((ind[:idim], ind[idim+1:]), (ind[idim], f)) for ind, f in gathered)
     return gathered
+
+  @property
+  def degree(self):
+    return builtins.max(func.degree for func in self.funcs)
 
 class Dot(Array):
 
@@ -1633,6 +1718,11 @@ class Dot(Array):
     funcaxis = self.axes_complement[axis]
     return Dot([Take(func1, index, funcaxis), Take(func2, index, funcaxis)], self.axes)
 
+  @property
+  def degree(self):
+    func1, func2 = self.funcs
+    return func1.degree + func2.degree
+
 class Sum(Array):
 
   __slots__ = 'axis', 'func'
@@ -1666,6 +1756,10 @@ class Sum(Array):
 
   def _derivative(self, var, seen):
     return sum(derivative(self.func, var, seen), self.axis)
+
+  @property
+  def degree(self):
+    return self.func.degree
 
 class TakeDiag(Array):
 
@@ -1702,6 +1796,10 @@ class TakeDiag(Array):
   def _sum(self, axis):
     if axis != self.axis:
       return TakeDiag(Sum(self.func, axis+(axis>=self.rmaxis)), self.axis-(axis<self.axis), self.rmaxis-(axis<self.rmaxis))
+
+  @property
+  def degree(self):
+    return self.func.degree
 
 class Take(Array):
 
@@ -1753,6 +1851,10 @@ class Take(Array):
     trytake = self.func._take(index, axis)
     if trytake is not None:
       return Take(trytake, self.indices, self.axis)
+
+  @property
+  def degree(self):
+    return self.func.degree
 
 class Power(Array):
 
@@ -1824,6 +1926,14 @@ class Power(Array):
     if iszero(self.power % 2):
       return ones_like(self)
 
+  @property
+  def degree(self):
+    if self.power.isconstant and self.power.ndim == 0 and self.func.degree < float('inf'):
+      power, = self.power.eval()
+      if int(power) == power and power >= 0:
+        return self.func.degree*int(power)
+    return 0 if self.func.degree == 0 and self.power.degree == 0 else float('inf')
+
 class Pointwise(Array):
   '''
   Abstract base class for pointwise array functions.
@@ -1864,6 +1974,10 @@ class Pointwise(Array):
 
   def _take(self, index, axis):
     return self.__class__(*[Take(arg, index, axis) for arg in self.args])
+
+  @property
+  def degree(self):
+    return 0 if all(arg.degree == 0 for arg in self.args) else float('inf')
 
 class Cos(Pointwise):
   'Cosine, element-wise.'
@@ -1992,6 +2106,10 @@ class Sign(Array):
     if iszero(n % 2):
       return ones_like(self)
 
+  @property
+  def degree(self):
+    return 0 if self.func.degree == 0 else float('inf')
+
 class OldSampled(Array):
   'sampled'
 
@@ -2012,6 +2130,10 @@ class OldSampled(Array):
     evalpoints = transform.apply(tail, points)
     assert mypoints.shape == evalpoints.shape and numpy.equal(mypoints, evalpoints).all(), 'Illegal point set'
     return myvals
+
+  @property
+  def degree(self):
+    return float('inf')
 
 class Sampled(Array):
   '''Convert sampled data to evaluable array.
@@ -2045,6 +2167,10 @@ class Sampled(Array):
     index = self.sample.index[i]
     return self.array[index]
 
+  @property
+  def degree(self):
+    return float('inf')
+
 class Elemwise(Array):
 
   __slots__ = 'data',
@@ -2070,6 +2196,10 @@ class Elemwise(Array):
       return Constant(self.data[0])
     return self
 
+  @property
+  def degree(self):
+    return 0
+
 class Eig(Evaluable):
 
   __slots__ = 'symmetric', 'func'
@@ -2086,8 +2216,8 @@ class Eig(Evaluable):
     return 2
 
   def __iter__(self):
-    yield ArrayFromTuple(self, index=0, shape=self.func.shape[:-1], dtype=float)
-    yield ArrayFromTuple(self, index=1, shape=self.func.shape, dtype=float)
+    yield ArrayFromTuple(self, index=0, shape=self.func.shape[:-1], dtype=float, degree=0 if self.func.degree == 0 else float('inf'))
+    yield ArrayFromTuple(self, index=1, shape=self.func.shape, dtype=float, degree=0 if self.func.degree == 0 else float('inf'))
 
   @property
   def simplified(self):
@@ -2101,15 +2231,20 @@ class Eig(Evaluable):
   def evalf(self, arr):
     return (numpy.linalg.eigh if self.symmetric else numpy.linalg.eig)(arr)
 
+  @property
+  def degree(self):
+    return 0 if self.func.degree == 0 else float('inf')
+
 class ArrayFromTuple(Array):
 
-  __slots__ = 'arrays', 'index'
+  __slots__ = 'arrays', 'index', 'degree'
 
   @types.apply_annotations
-  def __init__(self, arrays:strictevaluable, index:types.strictint, shape:asshape, dtype:asdtype):
+  def __init__(self, arrays:strictevaluable, index:types.strictint, shape:asshape, dtype:asdtype, degree=float('inf')):
     assert 0 <= index < len(arrays)
     self.arrays = arrays
     self.index = index
+    self.degree = degree
     super().__init__(args=[arrays], shape=shape, dtype=dtype)
 
   def evalf(self, arrays):
@@ -2186,6 +2321,10 @@ class Zeros(Array):
 
   def _determinant(self):
     return Zeros(self.shape[:-2], self.dtype)
+
+  @property
+  def degree(self):
+    return 0
 
 class Inflate(Array):
 
@@ -2304,6 +2443,10 @@ class Inflate(Array):
     if axis != self.axis:
       return Inflate(Unravel(self.func, axis, shape), self.dofmap, self.length, self.axis+(self.axis>axis))
 
+  @property
+  def degree(self):
+    return self.func.degree
+
 class Diagonalize(Array):
 
   __slots__ = 'func', 'axis', 'newaxis'
@@ -2419,6 +2562,10 @@ class Diagonalize(Array):
     else:
       return Diagonalize(Unravel(self.func, axis-(axis>self.newaxis), shape), self.axis+(axis<self.axis), self.newaxis+(axis<self.newaxis))
 
+  @property
+  def degree(self):
+    return self.func.degree
+
 class Guard(Array):
   'bar all simplifications'
 
@@ -2435,6 +2582,10 @@ class Guard(Array):
 
   def _derivative(self, var, seen):
     return Guard(derivative(self.fun, var, seen))
+
+  @property
+  def degree(self):
+    return self.fun.degree
 
 class TrigNormal(Array):
   'cos, sin'
@@ -2453,6 +2604,10 @@ class TrigNormal(Array):
   def evalf(self, angle):
     return numpy.array([numpy.cos(angle), numpy.sin(angle)]).T
 
+  @property
+  def degree(self):
+    return float('inf')
+
 class TrigTangent(Array):
   '-sin, cos'
 
@@ -2470,6 +2625,10 @@ class TrigTangent(Array):
   def evalf(self, angle):
     return numpy.array([-numpy.sin(angle), numpy.cos(angle)]).T
 
+  @property
+  def degree(self):
+    return float('inf')
+
 class Find(Array):
   'indices of boolean index vector'
 
@@ -2486,6 +2645,10 @@ class Find(Array):
     where, = where
     index, = where.nonzero()
     return index[_]
+
+  @property
+  def degree(self):
+    return float('inf')
 
 class DerivativeTargetBase(Array):
   'base class for derivative targets'
@@ -2575,6 +2738,10 @@ class Argument(DerivativeTargetBase):
     self, = args
     return zeros_like(self) if self._nderiv > 0 else self
 
+  @property
+  def degree(self):
+    return 0
+
 class LocalCoords(DerivativeTargetBase):
   'local coords derivative target'
 
@@ -2614,6 +2781,10 @@ class DelayedJacobian(Array):
   def prepare_eval(*args, ndims, **kwargs):
     self, = args
     return asarray(jacobian(self._geom, ndims)).prepare_eval(ndims=ndims, **kwargs)
+
+  @property
+  def degree(self):
+    return 0 if self._geom.degree in (0, 1) else float('inf')
 
 class Ravel(Array):
 
@@ -2706,6 +2877,10 @@ class Ravel(Array):
       newind = ravel(ind[self.axis][:,_] * self.func.shape[self.axis+1] + ind[self.axis+1][_,:], axis=0)
       yield (ind[:self.axis] + (newind,) + ind[self.axis+2:]), ravel(f, axis=self.axis)
 
+  @property
+  def degree(self):
+    return self.func.degree
+
 class Unravel(Array):
 
   __slots__ = 'func', 'axis', 'unravelshape'
@@ -2745,6 +2920,10 @@ class Unravel(Array):
   def _ravel(self, axis):
     if axis == self.axis:
       return self.func
+
+  @property
+  def degree(self):
+    return self.func.degree
 
 class Mask(Array):
 
@@ -2812,6 +2991,10 @@ class Mask(Array):
     if self.axis not in (axis, rmaxis):
       return Mask(TakeDiag(self.func, axis, rmaxis), self.mask, self.axis-(rmaxis<self.axis))
 
+  @property
+  def degree(self):
+    return self.func.degree
+
 class FindTransform(Array):
 
   __slots__ = 'transforms', 'bits'
@@ -2843,6 +3026,10 @@ class FindTransform(Array):
       raise IndexError('trans not found')
     return numpy.array(index)[_]
 
+  @property
+  def degree(self):
+    return 0
+
 class Range(Array):
 
   __slots__ = 'length', 'offset'
@@ -2862,6 +3049,10 @@ class Range(Array):
     length, = length
     offset, = offset
     return numpy.arange(offset, offset+length)[_]
+
+  @property
+  def degree(self):
+    return 0
 
 class Polyval(Array):
   '''
@@ -2942,6 +3133,10 @@ class Polyval(Array):
     else:
       return self
 
+  @property
+  def degree(self):
+    return 0 if self.points_ndim == 0 else self.coeffs.shape[-1]-1 if isinstance(self.coeffs.shape[-1], int) else float('inf')
+
 class RevolutionAngle(Array):
   '''
   Pseudo coordinates of a :class:`nutils.topology.RevolutionTopology`.
@@ -2967,6 +3162,10 @@ class RevolutionAngle(Array):
   def prepare_eval(*args, **kwargs):
     self, = args
     return zeros_like(self)
+
+  @property
+  def degree(self):
+    return 0
 
 # AUXILIARY FUNCTIONS (FOR INTERNAL USE)
 

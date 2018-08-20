@@ -228,12 +228,16 @@ class Topology(types.Singleton):
   def integral(self, func, ischeme='gauss', degree=None, geometry=None, edit=None):
     'integral'
 
-    ischeme, degree = element.parse_legacy_ischeme(ischeme if degree is None else ischeme + str(degree))
     if geometry is not None:
       warnings.deprecation('the `geometry` argument is deprecated, use `d:<geometry>` in expressions or `nutils.function.J(<geometry>)` instead')
       func = func * function.J(geometry, self.ndims)
     if edit is not None:
       funcs = edit(func)
+    if degree is None:
+      degree = func.prepare_eval(ndims=self.ndims).simplified.degree
+      if degree == float('inf'):
+        raise ValueError('The degree of the integrand is unbounded.  Please specify the degree of integration manually.')
+    ischeme, degree = element.parse_legacy_ischeme(ischeme if degree is None else ischeme + str(degree))
     return self.sample(ischeme, degree).integral(func)
 
   def projection(self, fun, onto, geometry, **kwargs):
