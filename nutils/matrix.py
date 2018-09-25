@@ -26,7 +26,7 @@ Matrices can be converted into other forms suitable for external processing via
 the ``export`` method.
 """
 
-from . import numpy, log, numeric, warnings, cache, types, config, util
+from . import numpy, log, numeric, warnings, cache, types, config, util, parallel
 import abc, sys, ctypes
 
 
@@ -399,11 +399,12 @@ if libmkl is not None:
 
     def __enter__(self):
       super().__enter__()
-      usethreads = config.nprocs > 1
+      # FIXME: parallel.nprocs might change after entering this context
+      usethreads = parallel.nprocs > 1
       libmkl.mkl_set_threading_layer(c_long(4 if usethreads else 1)) # 1:SEQUENTIAL, 4:TBB
       if usethreads and libtbb:
         self.tbbhandle = ctypes.c_void_p()
-        libtbb._ZN3tbb19task_scheduler_init10initializeEim(ctypes.byref(self.tbbhandle), ctypes.c_int(config.nprocs), ctypes.c_int(2))
+        libtbb._ZN3tbb19task_scheduler_init10initializeEim(ctypes.byref(self.tbbhandle), ctypes.c_int(parallel.nprocs), ctypes.c_int(2))
       else:
         self.tbbhandle = None
       return self
@@ -577,5 +578,8 @@ def diag(d):
 
 def eye(n):
   return diag(numpy.ones(n))
+
+def __nutils_run_extension__(info, backends='mkl,scipy,numpy'):
+  return backend(backends)
 
 # vim:sw=2:sts=2:et

@@ -425,4 +425,7 @@ class Recursion(types.Immutable, metaclass=_RecursionMeta):
     '''
     raise NotImplementedError
 
+def __nutils_run_extension__(info, *, cachedir='cache'):
+  return enable(os.path.join(info['outrootdir'], info['scriptname'], cachedir))
+
 # vim:sw=2:sts=2:et

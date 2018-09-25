@@ -48,4 +48,8 @@ class via:
   def showwarning(self, message, category, filename, lineno, *args):
     self.print('{}: {}\n  In {}:{}'.format(category.__name__, message, filename, lineno))
 
+def __nutils_run_extension__(info):
+  from . import log
+  return via(log.warning)
+
 # vim:sw=2:sts=2:et

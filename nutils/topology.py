@@ -555,7 +555,7 @@ class Topology(types.Singleton):
     located : :class:`nutils.sample.Sample`
     '''
 
-    nprocs = min(config.nprocs, len(self))
+    nprocs = min(parallel.nprocs, len(self))
     if arguments is None:
       arguments = {}
     if geom.ndim == 0:

@@ -148,7 +148,7 @@ class Sample(types.Singleton):
     # The data_index list contains shared memory index and value arrays for
     # each function argument.
 
-    nprocs = min(config.nprocs, self.nelems)
+    nprocs = min(parallel.nprocs, self.nelems)
     empty = parallel.shempty if nprocs > 1 else numpy.empty
     data_index = [
       (empty(n, dtype=float),
@@ -204,7 +204,7 @@ class Sample(types.Singleton):
 
     self, funcs = args
 
-    nprocs = min(config.nprocs, self.nelems)
+    nprocs = min(parallel.nprocs, self.nelems)
     zeros = parallel.shzeros if nprocs > 1 else numpy.zeros
     funcs = [function.asarray(func) for func in funcs]
     retvals = [zeros((self.npoints,)+func.shape, dtype=func.dtype) for func in funcs]

@@ -260,6 +260,15 @@ class StdoutLog(ContextLog):
       s = self._mkstr(level, text)
       print(s, end='\n' if endl else '', file=self.stream)
 
+  @staticmethod
+  def __nutils_run_extension__(info, *, richoutput=None, verbose=LEVELS.index('info')+1):
+    verbose = int(verbose)
+    if richoutput is None:
+      richoutput = sys.stdout.isatty()
+    else:
+      richoutput = {'yes': True, 'true': True, 'no': False, 'false': False}[richoutput.lower()]
+    return RichOutputLog() if richoutput else StdoutLog()
+
 class RichOutputLog(StdoutLog):
   '''Output rich (colored,unicode) text to stream.'''
 
@@ -399,6 +408,41 @@ class HtmlLog(ContextTreeLog):
     with self._open(filename, mode, exists) as f:
       yield f
     self.write(level, '<a href="{href}">{name}</a>'.format(href=urllib.parse.quote(f._realname), name=html.escape(filename)), escape=False)
+
+  @classmethod
+  @contextlib.contextmanager
+  def __nutils_run_extension__(cls, info, *, symlink=''):
+    starttime = info['starttime']
+    outrootdir = info['outrootdir']
+    scriptname = info['scriptname']
+    funcname = info['funcname']
+    funcargs = info['funcargs']
+
+    ymdt = starttime.strftime('%Y/%m/%d/%H-%M-%S/')
+    outdir = os.path.join(outrootdir, scriptname, ymdt)
+
+    for base, relpath in (outrootdir, os.path.join(scriptname, ymdt)), (os.path.join(outrootdir, scriptname), ymdt):
+      if not os.path.isdir(base):
+        os.makedirs(base)
+      if symlink:
+        target = os.path.join(base, symlink)
+        if os.path.islink(target):
+          os.remove(target)
+        os.symlink(relpath, target, target_is_directory=True)
+      with builtins.open(os.path.join(base,'log.html'), 'w') as redirlog:
+        print('<html><head>', file=redirlog)
+        print('<meta charset="UTF-8"/>', file=redirlog)
+        print('<meta http-equiv="cache-control" content="max-age=0" />', file=redirlog)
+        print('<meta http-equiv="cache-control" content="no-cache" />', file=redirlog)
+        print('<meta http-equiv="expires" content="0" />', file=redirlog)
+        print('<meta http-equiv="expires" content="Tue, 01 Jan 1980 1:00:00 GMT" />', file=redirlog)
+        print('<meta http-equiv="pragma" content="no-cache" />', file=redirlog)
+        print('<meta http-equiv="refresh" content="0;URL={}" />'.format(os.path.join(relpath,'log.html')), file=redirlog)
+        print('</head></html>', file=redirlog)
+
+    with cls(outdir, title=scriptname, scriptname=scriptname, funcname=funcname, funcargs=funcargs):
+      yield
+
 
 class IndentLog(ContextTreeLog):
   '''Output indented html snippets.'''

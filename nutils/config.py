@@ -190,7 +190,7 @@ class Config(types.ModuleType):
 
 sys.modules[__name__] = Config(
   __name__,
-  nprocs = 1,
+  nprocs = None,
   outrootdir = '~/public_html',
   outdir = '',
   verbose = 4,

@@ -26,7 +26,7 @@ will disable and a warning is printed.
 """
 
 from . import log, numpy, numeric
-import os, sys, multiprocessing, tempfile, mmap, traceback, signal, collections.abc
+import os, sys, multiprocessing, tempfile, mmap, traceback, signal, collections.abc, contextlib
 
 procid = None # current process id, None for unforked
 
@@ -190,5 +190,30 @@ def parmap(func, iterable, nprocs, shape=(), dtype=float):
   for i, item in pariter(enumerate(iterable), nprocs=min(n,nprocs)):
     out[i] = func(item)
   return out
+
+nprocs = 1
+
+@contextlib.contextmanager
+def _set(n):
+  global nprocs
+  o = nprocs
+  try:
+    nprocs = n
+    yield
+  finally:
+    nprocs = o
+
+def enable(nprocs=None):
+  if nprocs is None:
+    nprocs = multiprocessing.cpu_count()
+  return _set(nprocs)
+
+def disable():
+  return _set(1)
+
+def __nutils_run_extension__(info, nprocs=None):
+  if nprocs is not None:
+    nprocs = int(nprocs)
+  return enable(nprocs)
 
 # vim:sw=2:sts=2:et

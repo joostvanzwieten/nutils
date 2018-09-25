@@ -25,7 +25,7 @@ python function based arguments specified on the command line.
 """
 
 from . import log, util, config, long_version, warnings, matrix, cache
-import sys, inspect, os, datetime, pdb, signal, subprocess, contextlib
+import sys, inspect, os, datetime, pdb, signal, subprocess, contextlib, types, importlib, configparser
 
 def _version():
   try:
@@ -70,10 +70,27 @@ def run(func, *, skip=1, loaduserconfig=True):
   '''parse command line arguments and call function'''
 
   configs = []
+  new_config = configparser.ConfigParser()
   if loaduserconfig:
     home = os.path.expanduser('~')
     configs.append(dict(richoutput=sys.stdout.isatty()))
     configs.extend(path for path in (os.path.join(home, '.config', 'nutils', 'config'), os.path.join(home, '.nutilsrc')) if os.path.isfile(path))
+
+    if os.path.exists(os.path.join(home, '.config', 'nutils', 'run.conf')):
+      new_config.read(os.path.join(home, '.config', 'nutils', 'run.conf'))
+
+  extensions = ['nutils.matrix', 'nutils.log.StdoutLog', 'nutils.log.HtmlLog', 'nutils.warnings']
+  for extension in new_config.get('global', 'extensions', fallback='').split(','):
+    extension = extension.strip()
+    if not extension:
+      continue
+    elif extension.startswith('-'):
+      try:
+        extensions.remove(extension)
+      except ValueError:
+        pass
+    elif extension not in extensions:
+      extensions.append(extension)
 
   params = inspect.signature(func).parameters.values()
 
@@ -90,8 +107,33 @@ def run(func, *, skip=1, loaduserconfig=True):
 
   kwargs = {param.name: param.default for param in params}
   cli_config = {}
+  extension_args = {}
 
   for arg in sys.argv[skip:]:
+    if arg.startswith('-') and arg[1:2] != '-':
+      if '=' in arg:
+        print('invalid argument {!r}'.format(arg))
+        sys.exit(2)
+      try:
+        extensions.remove(arg[1:])
+      except ValueError:
+        pass
+      continue
+    if arg.startswith('+'):
+      extension, sep, value = arg[1:].partition('=')
+      if extension not in extensions:
+        extensions.append(extension)
+      if sep:
+        extargs, extkwargs = extension_args.setdefault(extension, ([], {}))
+        for extarg in value.split(','):
+          if '=' in extarg:
+            k, v = extarg.split('=', 1)
+            extkwargs[k] = v
+          elif extkwargs:
+            raise ValueError('positional argument follows keyword argument: {}'.format(arg))
+          else:
+            extargs.append(extarg)
+      continue
     name, sep, value = arg.lstrip('-').partition('=')
     if not sep:
       value = not name.startswith('no')
@@ -115,8 +157,13 @@ def run(func, *, skip=1, loaduserconfig=True):
       print('invalid argument for {!r}: {}'.format(name, e))
       sys.exit(2)
 
+  if 'outrootdir' in cli_config:
+    if not new_config.has_section('global'):
+      new_config.add_section('global')
+    new_config.set('global', 'outrootdir', cli_config['outrootdir'])
+
   with config(*configs, **cli_config):
-    status = call(func, kwargs, scriptname=os.path.basename(sys.argv[0]), funcname=None if skip==1 else func.__name__)
+    status = call(func, kwargs, scriptname=os.path.basename(sys.argv[0]), funcname=None if skip==1 else func.__name__, extensions=extensions, extension_args=extension_args, new_config=new_config)
 
   sys.exit(status)
 
@@ -138,45 +185,48 @@ def choose(*functions, loaduserconfig=True):
 
   run(functions[ifunc], skip=2, loaduserconfig=loaduserconfig)
 
-def call(func, kwargs, scriptname, funcname=None):
+def call(func, kwargs, scriptname, funcname=None, extensions=(), extension_args={}, new_config=None):
   '''set up compute environment and call function'''
 
   starttime = datetime.datetime.now()
-  outrootdir = os.path.expanduser(config.outrootdir)
-  ymdt = starttime.strftime('%Y/%m/%d/%H-%M-%S/')
-  outdir = config.outdir or os.path.join(outrootdir, scriptname, ymdt)
+  _info = dict(outrootdir=os.path.expanduser(new_config.get('global', 'outrootdir', fallback='~/public_html')),
+               starttime=starttime,
+               scriptname=scriptname,
+               funcname=funcname,
+               funcargs=tuple((param.name, kwargs.get(param.name, param.default), param.annotation) for param in inspect.signature(func).parameters.values()))
+  info = types.MappingProxyType(_info)
 
-  for base, relpath in (outrootdir, os.path.join(scriptname, ymdt)), (os.path.join(outrootdir, scriptname), ymdt):
-    if not os.path.isdir(base):
-      os.makedirs(base)
-    if config.symlink:
-      target = os.path.join(base, config.symlink)
-      if os.path.islink(target):
-        os.remove(target)
-      os.symlink(relpath, target, target_is_directory=True)
-    if config.htmloutput:
-      with open(os.path.join(base,'log.html'), 'w') as redirlog:
-        print('<html><head>', file=redirlog)
-        print('<meta charset="UTF-8"/>', file=redirlog)
-        print('<meta http-equiv="cache-control" content="max-age=0" />', file=redirlog)
-        print('<meta http-equiv="cache-control" content="no-cache" />', file=redirlog)
-        print('<meta http-equiv="expires" content="0" />', file=redirlog)
-        print('<meta http-equiv="expires" content="Tue, 01 Jan 1980 1:00:00 GMT" />', file=redirlog)
-        print('<meta http-equiv="pragma" content="no-cache" />', file=redirlog)
-        print('<meta http-equiv="refresh" content="0;URL={}" />'.format(os.path.join(relpath,'log.html')), file=redirlog)
-        print('</head></html>', file=redirlog)
+  with contextlib.ExitStack() as stack:
 
-  try:
-    old_sigint_handler = signal.signal(signal.SIGINT, _sigint_handler)
-    with contextlib.ExitStack() as stack:
+    for extension in extensions:
+      parts = *extension.split('.'), '__nutils_run_extension__'
+      for i in range(1, len(parts)):
+        try:
+          ext = importlib.import_module('.'.join(parts[:i]))
+        except ImportError:
+          pass
+        else:
+          break
+      else:
+        raise ValueError('extension not found: {}'.format(extension))
+      for part in parts[i:]:
+        ext = getattr(ext, part)
 
-      stack.enter_context(cache.enable(os.path.join(outrootdir, scriptname, config.cachedir)) if config.cache else cache.disable())
-      stack.enter_context(matrix.backend(config.matrix))
-      stack.enter_context(log.RichOutputLog() if config.richoutput else log.StdoutLog())
-      if config.htmloutput:
-        funcargs = [(param.name, kwargs.get(param.name, param.default), param.annotation) for param in inspect.signature(func).parameters.values()]
-        stack.enter_context(log.HtmlLog(outdir, title=scriptname, scriptname=scriptname, funcname=funcname, funcargs=funcargs))
-      stack.enter_context(warnings.via(log.warning))
+      extsig = inspect.signature(ext)
+      if any(param.kind == param.VAR_POSITIONAL for param in extsig.parameters.values()):
+        raise ValueError('Extension {} has invalid signature: {}  It should be possible to pass all arguments as keywords.'.format(extension, extsig))
+      extkwargs = dict(new_config.items(extension)) if new_config and new_config.has_section(extension) else {}
+      extcmdargs, extcmdkwargs = extension_args.get(extension, ([], {}))
+      extkwargs.update(extcmdkwargs)
+      extparams = tuple(extsig.parameters.values())[1:]
+      for i, extval in enumerate(extcmdargs):
+        assert extparams[i].kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
+        extkwargs[extparams[i].name] = extval
+
+      stack.enter_context(ext(info, **extkwargs))
+
+    try:
+      old_sigint_handler = signal.signal(signal.SIGINT, _sigint_handler)
 
       log.info('nutils v{}'.format(_version()))
       log.info('start {}'.format(starttime.ctime()))
@@ -184,26 +234,27 @@ def call(func, kwargs, scriptname, funcname=None):
       func(**kwargs)
 
       endtime = datetime.datetime.now()
+      _info['endtime'] = endtime
       minutes, seconds = divmod((endtime-starttime).seconds, 60)
       hours, minutes = divmod(minutes, 60)
 
       log.info('finish {}'.format(endtime.ctime()))
       log.info('elapsed {:.0f}:{:02.0f}:{:02.0f}'.format(hours, minutes, seconds))
 
-  except (KeyboardInterrupt,SystemExit,pdb.bdb.BdbQuit):
-    return 1
-  except:
-    if config.pdb:
-      print(_mkbox(
-        'YOUR PROGRAM HAS DIED. The Python debugger',
-        'allows you to examine its post-mortem state',
-        'to figure out why this happened. Type "h"',
-        'for an overview of commands to get going.'))
-      pdb.post_mortem()
-    return 2
-  else:
-    return 0
-  finally:
-    signal.signal(signal.SIGINT, old_sigint_handler) # restore handler
+    except (KeyboardInterrupt,SystemExit,pdb.bdb.BdbQuit):
+      return 1
+    except:
+      if config.pdb:
+        print(_mkbox(
+          'YOUR PROGRAM HAS DIED. The Python debugger',
+          'allows you to examine its post-mortem state',
+          'to figure out why this happened. Type "h"',
+          'for an overview of commands to get going.'))
+        pdb.post_mortem()
+      return 2
+    else:
+      return 0
+    finally:
+      signal.signal(signal.SIGINT, old_sigint_handler) # restore handler
 
 # vim:sw=2:sts=2:et
