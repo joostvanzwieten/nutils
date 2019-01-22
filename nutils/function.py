@@ -42,7 +42,7 @@ possible only via inverting of the geometry function, which is a fundamentally
 expensive and currently unsupported operation.
 """
 
-from . import util, types, numpy, numeric, config, cache, transform, transformseq, expression, warnings, _
+from . import util, types, numpy, numeric, config, cache, element, elementseq, transform, transformseq, expression, warnings, _
 import sys, itertools, functools, operator, inspect, numbers, builtins, re, types as builtin_types, abc, collections.abc, math, treelog as log
 
 isevaluable = lambda arg: isinstance(arg, Evaluable)
@@ -3323,6 +3323,221 @@ class StructuredBasis(Basis):
     x = functools.reduce(numpy.add.outer, reversed(supports)).ravel()
     assert (numpy.unique(x) == x).all()
     return types.frozenarray(functools.reduce(numpy.add.outer, reversed(supports)).ravel(), copy=False, dtype=types.strictint)
+
+class _SimplexConnectivity(types.Singleton):
+
+  def __init__(self, ndims, nsimplices, nverts, nedges):
+    self.ndims = ndims
+    self.nsimplices = nsimplices
+    self.nverts = nverts
+    self.nedges = nedges
+    super().__init__()
+
+  @abc.abstractmethod
+  def get_verts(ielem):
+    raise NotImplementedError
+
+  @abc.abstractmethod
+  def get_edges(ielem):
+    raise NotImplementedError
+
+  @abc.abstractmethod
+  def get_elements_with_vertex(ivertex):
+    raise NotImplementedError
+
+  @abc.abstractmethod
+  def get_elements_with_edge(iedge):
+    raise NotImplementedError
+
+  @property
+  def refined(self):
+    if self.ndims == 1:
+      return _SimplexConnectivity1DRefined(self)
+    elif self.ndims == 2:
+      return _SimplexConnectivity2DRefined(self)
+    else:
+      raise NotImplementedError
+
+class _SimplexConnectivityBase(_SimplexConnectivity):
+
+  def __init__(self, simplices:types.frozenarray[types.strictint]):
+    self._simplices = simplices
+    edge_index = {}
+    edges = tuple(numpy.fromiter((i for i in range(self._simplices.shape[1]) if i != j), dtype=int) for j in range(self._simplices.shape[1]))
+    self._edges = types.frozenarray([[edge_index.setdefault(tuple(simplex[edge]), len(edge_index)) for edge in edges] for simplex in simplices], dtype=int)
+    super().__init__(ndims=self._simplices.shape[1]-1, nsimplices=len(self._simplices), nverts=simplices.max()+1, nedges=len(edge_index))
+
+  def get_verts(self, ielem):
+    return self._simplices[ielem]
+
+  def get_edges(self, ielem):
+    return self._edges[ielem]
+
+  def get_elements_with_vertex(self, ivertex):
+    return numpy.where(numpy.equal(self._simplices, ivertex).any(axis=1))[0]
+
+  def get_elements_with_edge(self, iedge):
+    return numpy.where(numpy.equal(self._edges, iedge).any(axis=1))[0]
+
+class _SimplexConnectivity1DRefined(_SimplexConnectivity):
+
+  def __init__(self, parent):
+    self._parent = parent
+    self._verts = numpy.array([[0,2],[2,1]])
+    super().__init__(ndims=parent.ndims, nsimplices=2*parent.nsimplices, nverts=parent.nverts+parent.nsimplices, nedges=parent.nverts+parent.nsimplices)
+
+  def get_verts(self, ielem):
+    iparent, ichild = divmod(ielem, 2)
+    verts = numpy.concatenate([self._parent.get_verts(iparent), [self._parent.nverts+iparent]])
+    return verts[self._verts[ichild]]
+
+  def get_edges(self, ielem):
+    return self.get_verts(ielem)[::-1]
+
+  def get_elements_with_vertex(self, ivertex):
+    if ivertex < self._parent.nverts:
+      return numpy.array([ielem for iparent in self._parent.get_elements_with_vertex(ivertex) for ielem in (2*iparent,2*iparent+2) if numpy.equal(self.get_verts(ielem), ivertex).any()], dtype=int)
+    else:
+      return numpy.array([ivertex - self._parent.nverts])
+
+  get_elements_with_edge = get_elements_with_vertex
+
+class _SimplexConnectivity2DRefined(_SimplexConnectivity):
+
+  def __init__(self, parent):
+    self._parent = parent
+    self._verts = numpy.array([[0,5,4],[5,1,3],[4,3,2],[5,4,3]])
+    self._edges = numpy.array([[8,2,4],[0,7,5],[1,3,6],[6,7,8]])
+    super().__init__(ndims=parent.ndims, nsimplices=4*parent.nsimplices, nverts=parent.nverts+parent.nedges, nedges=2*parent.nedges+3*parent.nsimplices)
+
+  def get_verts(self, ielem):
+    iparent, ichild = divmod(ielem, 4)
+    verts = numpy.concatenate([self._parent.get_verts(iparent), self._parent.nverts+self._parent.get_edges(iparent)])
+    return verts[self._verts[ichild]]
+
+  def get_edges(self, ielem):
+    iparent, ichild = divmod(ielem, 4)
+    edges = numpy.concatenate([(2*self._parent.get_edges(iparent)[:,None]+numpy.arange(2)[None,:]).ravel(), 2*self._parent.nedges+3*iparent+numpy.arange(3)])
+    return edges[self._edges[ichild]]
+
+  def get_elements_with_vertex(self, ivertex):
+    if ivertex < self._parent.nverts:
+      iparents = self._parent.get_elements_with_vertex(ivertex)
+    else:
+      iparents = self._parent.get_elements_with_edge(ivertex-self._parent.nverts)
+    return numpy.array([ielem for iparent in iparents for ielem in range(4*iparent,4*iparent+4) if numpy.equal(self.get_verts(ielem), ivertex).any()], dtype=int)
+
+  def get_elements_with_edge(self, iedge):
+    if iedge < 2*self._parent.nedges:
+      iparents = self._parent.get_elements_with_edge(iedge//2)
+    else:
+      iparents = (iedge-2*self._parent.nedges)//3,
+    return numpy.array([ielem for iparent in iparents for ielem in range(4*iparent,4*iparent+4) if numpy.equal(self.get_edges(ielem), iedge).any()], dtype=int)
+
+class _SimplexConnectivity3DRefined(_SimplexConnectivity):
+
+  # 2
+  # 86  4
+  # 091 75  3
+
+  # parent : 0123, edges: 123, 023, 013, 012
+
+  # child 0: 0987, edges: 987, 087, 097, 098
+  # child 1: 9165, edges: 165, 965, 915, 916
+  # child 2: 8624, edges: 624, 824, 864, 862
+  # child 3: 7543, edges: 543, 743, 753, 754
+  # child 4: 6754, edges: 754, 654, 674, 675
+  # child 5: 8674, edges: 674, 874, 864, 867
+  # child 6: 9675, edges: 675, 975, 965, 967
+  # child 7: 9867, edges: 867, 967, 987, 986
+
+  def __init__(self, parent):
+    self._parent = parent
+    self._verts = numpy.array([[0,9,8,7],[9,1,6,5],[8,6,2,4],[7,5,4,3],[6,7,5,4],[8,6,7,4],[9,6,7,5],[9,8,6,7]])
+    self._edges = numpy.array([[8,2,4],[0,7,5],[1,3,6],[6,7,8]])
+    super().__init__(ndims=parent.ndims, nsimplices=8*parent.nsimplices, nverts=parent.nverts+parent.nedges, nedges=2*parent.nedges+3*parent.nsimplices)
+
+  def get_verts(self, ielem):
+    iparent, ichild = divmod(ielem, 8)
+    verts = numpy.concatenate([self._parent.get_verts(iparent), self._parent.nverts+self._parent.get_edges(iparent)])
+    return verts[self._verts[ichild]]
+
+  def get_edges(self, ielem):
+    iparent, ichild = divmod(ielem, 8)
+    edges = numpy.concatenate([(2*self._parent.get_edges(iparent)[:,None]+numpy.arange(2)[None,:]).ravel(), 2*self._parent.nedges+3*iparent+numpy.arange(3)])
+    return edges[self._edges[ichild]]
+
+  def get_elements_with_vertex(self, ivertex):
+    if ivertex < self._parent.nverts:
+      iparents = self._parent.get_elements_with_vertex(ivertex)
+    else:
+      iparents = self._parent.get_elements_with_edge(ivertex-self._parent.nverts)
+    return numpy.array([ielem for iparent in iparents for ielem in range(8*iparent,8*iparent+8) if numpy.equal(self.get_verts(ielem), ivertex).any()], dtype=int)
+
+  def get_elements_with_edge(self, iedge):
+    if iedge < 4*self._parent.nedges:
+      iparents = self._parent.get_elements_with_edge(iedge//2)
+    else:
+      iparents = (iedge-4*self._parent.nedges)//3,
+    return numpy.array([ielem for iparent in iparents for ielem in range(8*iparent,8*iparent+8) if numpy.equal(self.get_edges(ielem), iedge).any()], dtype=int)
+
+class SimplexBasis(Basis):
+
+  @types.apply_annotations
+  def __init__(self, simplices:types.frozenarray[types.strictint], transforms:transformseq.stricttransforms, type:types.strictstr, degree:types.strictint, nrefine:types.strictint=0, trans=TRANS):
+    ndims = transforms.fromdims
+    assert simplices.shape == (len(transforms), ndims+1)
+
+    self._degree = degree
+    self._reference = element.getsimplex(ndims)
+    self._coefficients = types.frozenarray(self._reference.get_poly_coeffs(type, degree=self._degree), dtype=float)
+    self._connectivity = _SimplexConnectivityBase(simplices)
+    for i in range(nrefine):
+      transforms = transforms.refined(elementseq.UniformReferences(self._reference, self._connectivity.nsimplices))
+      self._connectivity = self._connectivity.refined
+
+    self._vert_dofs = numpy.array([element.getsimplex(i).get_ndofs(degree)-1 for i in range(ndims+1)], dtype=int)
+    skip = set(self._vert_dofs)
+    self._edge_dofs = numpy.array([list(filter(lambda dof: dof not in skip, self._reference.get_edge_dofs(degree, i))) for i in range(ndims+1)], dtype=int)
+    skip |= set(self._edge_dofs.ravel())
+    self._inner_dofs = numpy.array(list(filter(lambda dof: dof not in skip, range(self._reference.get_ndofs(degree)))), dtype=int)
+
+    self._ndofs_per_edge = self._edge_dofs.shape[1]
+    self._ninner_dofs_per_elem = len(self._inner_dofs)
+    self._ndofs_per_elem = self._reference.get_ndofs(self._degree)
+    ndofs = self._connectivity.nverts + self._ndofs_per_edge*self._connectivity.nedges + self._ninner_dofs_per_elem*self._connectivity.nsimplices
+
+    super().__init__(ndofs=ndofs, transforms=transforms, trans=trans)
+
+  def get_coefficients(self, ielem):
+    ielem = numeric.normdim(len(self.transforms), ielem)
+    return self._coefficients
+
+  def get_dofs(self, ielem):
+    if not numeric.isint(ielem):
+      return super().get_dofs(ielem)
+    ielem = numeric.normdim(len(self.transforms), ielem)
+    # Numbering: first all vertices, then all remaining dofs at edges, then all
+    # remaining dofs inside the elements.
+    dofs = numpy.empty([self._ndofs_per_elem], dtype=int)
+    dofs[self._vert_dofs] = self._connectivity.get_verts(ielem)
+    if self._ndofs_per_edge:
+      dofs[self._edge_dofs] = self._connectivity.nverts + self._ndofs_per_edge*self._connectivity.get_edges(ielem)[:,None] + numpy.arange(self._ndofs_per_edge)[None,:]
+    if self._ninner_dofs_per_elem:
+      dofs[self._inner_dofs] = self._connectivity.nverts + self._ndofs_per_edge*self._connectivity.nedges + self._ninner_dofs_per_elem*ielem + numpy.arange(self._ninner_dofs_per_elem)
+    return dofs
+
+  def get_support(self, dof):
+    if not numeric.isint(dof):
+      return super().get_support(dof)
+    dof = numeric.normdim(self.ndofs, dof)
+    if dof < self._connectivity.nverts:
+      return self._connectivity.get_elements_with_vertex(dof)
+    dof -= self._connectivity.nverts
+    if dof < self._ndofs_per_edge*self._connectivity.nedges:
+      return self._connectivity.get_elements_with_edge(dof // self._ndofs_per_edge)
+    dof -= self._ndofs_per_edge*self._connectivity.nedges
+    return numpy.array([dof // self._ninner_dofs_per_elem], dtype=int)
 
 class PrunedBasis(Basis):
   '''A subset of another :class:`Basis`.
