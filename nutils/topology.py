@@ -1570,32 +1570,47 @@ class ConnectedTopology(UnstructuredTopology):
 class SimplexTopology(Topology):
   'simpex topology'
 
-  __slots__ = 'simplices', 'references', 'transforms', 'opposites'
+  __slots__ = 'simplices', '_base_simplices', '_base_transforms', '_nrefine'
   __cache__ = 'connectivity'
 
   @types.aspreprocessor
   @types.apply_annotations
-  def _preprocess_init(self, simplices:types.frozenarray[types.strictint], transforms):
+  def _preprocess_init(self, simplices:types.frozenarray[types.strictint], transforms, nrefine:types.strictint=0):
     ntransforms, nverts = simplices.shape
     if not isinstance(transforms, transformseq.Transforms):
       transforms = transformseq.PlainTransforms(transforms, nverts-1)
     else:
       assert len(transforms) == ntransforms
       assert transforms.fromdims == nverts-1
-    return (self, simplices, transforms), {}
+    return (self, simplices, transforms, nrefine), {}
 
   @_preprocess_init
-  def __init__(self, simplices, transforms):
+  def __init__(self, simplices, transforms, nrefine):
     assert simplices.shape == (len(transforms), transforms.fromdims+1)
-    self.simplices = simplices
+    self._nrefine = nrefine
+    self._base_simplices = simplices
+    self._base_transforms = transforms
+    self.simplices = simplices if self._nrefine == 0 else NotImplemented
     references = elementseq.asreferences([element.getsimplex(transforms.fromdims)], transforms.fromdims)*len(transforms)
+    for i in range(self._nrefine):
+      references, transforms = references.children, transforms.refined(references)
     super().__init__(references, transforms, transforms)
 
   @property
   def connectivity(self):
-    connectivity = -numpy.ones((len(self.simplices), self.ndims+1), dtype=int)
+    if self._nrefine != 0:
+      from .function import _SimplexConnectivityBase
+      connectivity = function._SimplexConnectivityBase(self._base_simplices)
+      for i in range(self._nrefine):
+        connectivity = connectivity.refined
+      simplices = numpy.empty((connectivity.nsimplices, self.ndims+1), dtype=int)
+      for i in range(connectivity.nsimplices):
+        simplices[i] = connectivity.get_verts(i)
+    else:
+      simplices = self.simplices
+    connectivity = -numpy.ones((len(simplices), self.ndims+1), dtype=int)
     edge_vertices = numpy.arange(self.ndims+1).repeat(self.ndims).reshape(self.ndims, self.ndims+1)[:,::-1].T # nedges x nverts
-    v = self.simplices.take(edge_vertices, axis=1).reshape(-1, self.ndims) # (nelems,nedges) x nverts
+    v = simplices.take(edge_vertices, axis=1).reshape(-1, self.ndims) # (nelems,nedges) x nverts
     o = numpy.lexsort(v.T)
     vo = v.take(o, axis=0)
     i, = numpy.equal(vo[1:], vo[:-1]).all(axis=1).nonzero()
@@ -1609,6 +1624,8 @@ class SimplexTopology(Topology):
   def basis_bubble(self):
     'bubble from vertices'
 
+    if self._nrefine != 0:
+      raise NotImplementedError
     bernstein = element.getsimplex(self.ndims).get_poly_coeffs('bernstein', degree=1)
     bubble = functools.reduce(numeric.poly_mul, bernstein)
     coeffs = numpy.zeros((len(bernstein)+1,) + bubble.shape)
@@ -1620,6 +1637,28 @@ class SimplexTopology(Topology):
     ndofs = nverts + len(self)
     nmap = [types.frozenarray(numpy.hstack([idofs, nverts+ielem]), copy=False) for ielem, idofs in enumerate(self.simplices)]
     return function.PlainBasis([coeffs] * len(self), nmap, ndofs, self.transforms)
+
+  @property
+  def refined(self):
+    return SimplexTopology(self._base_simplices, self._base_transforms, self._nrefine+1)
+
+  def basis_lagrange(self, degree):
+    return function.SimplexBasis(self._base_simplices, self._base_transforms, 'lagrange', degree, self._nrefine)
+
+  def basis_bernstein(self, degree):
+    return function.SimplexBasis(self._base_simplices, self._base_transforms, 'bernstein', degree, self._nrefine)
+
+  basis_std = basis_bernstein
+
+  @property
+  def boundary(self):
+    if self._nrefine > 0:
+      boundary = SimplexTopology(self._base_simplices, self._base_transforms, 0).boundary
+      for i in range(self._nrefine):
+        boundary = boundary.refined
+      return boundary
+    else:
+      return super().boundary
 
 class UnionTopology(Topology):
   'grouped topology'
