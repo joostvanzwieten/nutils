@@ -83,7 +83,10 @@ class Topology(types.Singleton):
       item = types.frozenarray(numpy.where(item)[0], copy=False)
     if numeric.isintarray(item):
       item = types.frozenarray(item)
-      return UnstructuredTopology(self.references[item], self.transforms[item], self.opposites[item])
+      if len(item) == 0:
+        return EmptyTopology(self.ndims)
+      else:
+        return MaskedTopology(self, item)
     if not isinstance(item, tuple):
       item = item,
     if all(it in (...,slice(None)) for it in item):
@@ -1710,6 +1713,81 @@ class DisjointUnionTopology(Topology):
   @property
   def refined(self):
     return DisjointUnionTopology([topo.refined for topo in self._topos], self._names)
+
+class MaskedTopology(Topology):
+  '''An order preserving subset of another :class:`Topology` object.
+
+  Parameters
+  ----------
+  parent : :class:`Topology`
+      The topology to subset.
+  indices : one-dimensional array of :class:`int`\\s
+      The strict monotonic increasing indices of elements to keep.
+  '''
+
+  __slots__ = '_parent', '_indices'
+  __cache__ = 'boundary', 'interfaces', 'refined'
+
+  @types.apply_annotations
+  def __init__(self, parent:stricttopology, indices:types.frozenarray[types.strictint]):
+    self._parent = parent
+    self._indices = indices
+    super().__init__(parent.references[indices], parent.transforms[indices], parent.opposites[indices])
+
+  def getitem(self, item):
+    raise NotImplementedError
+
+  def __rsub__(self, other):
+    # TODO
+    return super().__rsub__(other)
+
+  def __or__(self, other):
+    # TODO
+    return super().__or__(other)
+
+  @property
+  def refined(self):
+    refined_parent = self._parent.refined
+    indices = numpy.fromiter(map(refined_parent.transforms.index, self.transforms.refined(self.references)), dtype=int)
+    indices.sort()
+    return MaskedTopology(refined_parent, indices)
+
+  @property
+  def boundary(self):
+    selection = [i for i, trans in enumerate(self._parent.boundary.transforms) if self.transforms.contains_with_tail(trans)]
+    boundary = self._parent.boundary[types.frozenarray(selection, dtype=int)]
+
+    references = []
+    transforms = []
+    for ref, trans, opp in zip(self._parent.interfaces.references, self._parent.interfaces.transforms, self._parent.interfaces.opposites):
+      ttrans = self.transforms.contains_with_tail(trans)
+      topp = self.transforms.contains_with_tail(opp)
+      if ttrans and not topp:
+        references.append(ref)
+        transforms.append(trans)
+      elif not ttrans and topp:
+        references.append(ref)
+        transforms.append(opp)
+    if references:
+      interfaces = UnstructuredTopology(references, transforms, ndims=self.ndims-1)
+    else:
+      interfaces = EmptyTopology(self.ndims-1)
+
+    return DisjointUnionTopology([boundary, interfaces])
+
+  @property
+  def interfaces(self):
+    selection = [i for i, (trans, opp) in enumerate(zip(self._parent.interfaces.transforms, self._parent.interfaces.opposites)) if self.transforms.contains_with_tail(trans) and self.transforms.contains_with_tail(opp)]
+    return self._parent.interfaces[types.frozenarray(selection, dtype=int)]
+
+  @log.withcontext
+  def basis(self, name, *args, **kwargs):
+    if name == 'discont':
+      return super().basis(name, *args, **kwargs)
+    if isinstance(self._parent, HierarchicalTopology):
+      warnings.warn('basis may be linearly dependent; a linearly indepent basis is obtained by taking a subset first, then creating hierarchical refinements')
+    basis = self._parent.basis(name, *args, **kwargs)
+    return function.PrunedBasis(basis, self._indices)
 
 class SubsetTopology(Topology):
   'trimmed'
