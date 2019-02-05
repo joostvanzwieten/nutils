@@ -77,6 +77,10 @@ class Topology(types.Singleton):
     return EmptyTopology(self.ndims)
 
   def __getitem__(self, item):
+    if numeric.isboolarray(item):
+      if item.shape != (len(self),):
+        raise IndexError('mask has invalid shape')
+      item = types.frozenarray(numpy.where(item)[0], copy=False)
     if numeric.isintarray(item):
       item = types.frozenarray(item)
       return UnstructuredTopology(self.references[item], self.transforms[item], self.opposites[item])
