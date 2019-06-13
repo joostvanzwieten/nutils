@@ -33,21 +33,9 @@ def apply(chain, points):
     points = trans.apply(points)
   return points
 
-def n_ascending(chain):
-  # number of ascending transform items counting from root (0). this is a
-  # temporary hack required to deal with Bifurcate/Slice; as soon as we have
-  # proper tensorial topologies we can switch back to strictly ascending
-  # transformation chains.
-  for n, trans in enumerate(chain):
-    if trans.todims is not None and trans.todims < trans.fromdims:
-      return n
-  return len(chain)
-
 def canonical(chain):
   # keep at lowest ndims possible; this is the required form for bisection
-  n = n_ascending(chain)
-  if n < 2:
-    return tuple(chain)
+  n = len(chain)
   items = list(chain)
   i = 0
   while items[i].fromdims > items[n-1].fromdims:
@@ -61,7 +49,7 @@ def canonical(chain):
 
 def uppermost(chain):
   # bring to highest ndims possible
-  n = n_ascending(chain)
+  n = len(chain)
   if n < 2:
     return tuple(chain)
   items = list(chain)
@@ -133,23 +121,6 @@ class TransformItem(types.Singleton):
 
 stricttransformitem = types.strict[TransformItem]
 stricttransform = types.tuple[stricttransformitem]
-
-class Bifurcate(TransformItem):
-
-  __slots__ = 'trans1', 'trans2'
-
-  @types.apply_annotations
-  def __init__(self, trans1:canonical, trans2:canonical):
-    fromdims = trans1[-1].fromdims + trans2[-1].fromdims
-    self.trans1 = trans1 + (Slice(0, trans1[-1].fromdims, fromdims),)
-    self.trans2 = trans2 + (Slice(trans1[-1].fromdims, fromdims, fromdims),)
-    super().__init__(todims=trans1[0].todims if trans1[0].todims == trans2[0].todims else None, fromdims=fromdims)
-
-  def __str__(self):
-    return '{}<>{}'.format(self.trans1, self.trans2)
-
-  def apply(self, points):
-    return apply(self.trans1, points), apply(self.trans2, points)
 
 class Matrix(TransformItem):
   '''Affine transformation :math:`x ↦ A x + b`, with :math:`A` an :math:`n×m` matrix, :math:`n≥m`

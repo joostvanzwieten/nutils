@@ -89,17 +89,7 @@ def line(nodes, periodic=False, bnames=None):
   return domain, geom
 
 def newrectilinear(nodes, periodic=None, bnames=[['left','right'],['bottom','top'],['front','back']]):
-  if periodic is None:
-    periodic = numpy.zeros(len(nodes), dtype=bool)
-  else:
-    periodic = numpy.asarray(periodic)
-    assert len(periodic) == len(nodes) and periodic.ndim == 1 and periodic.dtype == bool
-  dims = [line(nodesi, periodici, bnamesi) for nodesi, periodici, bnamesi in zip(nodes, periodic, tuple(bnames)+(None,)*len(nodes))]
-  domain, geom = dims.pop(0)
-  for domaini, geomi in dims:
-    domain = domain * domaini
-    geom = function.concatenate(function.bifurcate(geom,geomi))
-  return domain, geom
+  raise NotImplementedError
 
 @log.withcontext
 def multipatch(patches, nelems, patchverts=None, name='multipatch'):
