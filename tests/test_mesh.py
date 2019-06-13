@@ -111,6 +111,7 @@ for degree in 1, 2:
   gmshmanifold(degree=degree)
 
 @parametrize
+@unittest.skip('in between bifurcate and tensorial')
 class rectilinear(TestCase):
 
   def setUp(self):
