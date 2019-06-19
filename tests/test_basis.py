@@ -30,6 +30,7 @@ class basis(basisTest):
     for iref in range(self.nrefine):
       self.domain = self.domain.refined_by([len(self.domain)-1])
     if self.boundary:
+      self.skipTest('bases on boundaries of non-tensorial topologies are (temporarily) not supported')
       self.domain = self.domain.boundary[self.boundary]
     self.basis = self.domain.basis(self.btype, degree=self.degree)
     self.gauss = 'gauss{}'.format(2*self.degree)
