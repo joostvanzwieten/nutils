@@ -196,13 +196,14 @@ class cutdomain(TestCase):
 
   def setUp(self):
     super().setUp()
-    domain, geom = mesh.rectilinear((numpy.linspace(0,1,self.nelems+1),)*3)
     if self.ndims == 3:
+      domain, geom = mesh.rectilinear((numpy.linspace(0,1,self.nelems+1),)*3)
       self.domain = domain
       self.geom = geom
-    elif self.ndims == 2: # create a 3d boundary instead of a plain 2d domain for added complexity
-      self.domain = domain.boundary['back']
-      self.geom = geom[:2]
+    elif self.ndims == 2:
+      domain, geom = mesh.rectilinear((numpy.linspace(0,1,self.nelems+1),)*2)
+      self.domain = domain
+      self.geom = geom
     else:
       raise Exception('invalid dimension: ndims={}'.format(self.ndims))
     self.radius = numpy.sqrt(.5)
