@@ -395,6 +395,17 @@ class SelectChain(TransformChain):
   def prepare_eval(self, *, opposite=False, kwargs=...):
     return SelectChain(tuple(self.roots), 1-self.n) if opposite else self
 
+class EmptyTransformChain(TransformChain):
+
+  __slots__ = ()
+
+  @types.apply_annotations
+  def __init__(self, root:strictroot, todims:types.strictint=None, fromdims:types.strictint=None):
+    super().__init__(root=root, args=[], todims=todims, fromdims=fromdims)
+
+  def evalf(self):
+    return ()
+
 class TransformChainFromTuple(TransformChain):
 
   __slots__ = 'index'
@@ -666,6 +677,53 @@ class Array(Evaluable):
       const, = self.eval()
       return Constant(const)
     return super().optimized_for_numpy
+
+class RootBasis(Array):
+  '''Orthonormal vectors spanning the tangent space and the complement.
+
+  The first ``ndimstangent`` vectors span the tangent space of the manifold,
+  the remainders span the complement.
+
+  Parameters
+  ----------
+  roots : :class:`tuple` of :class:`Root` objects
+      The roots to compute the tangent and normal vectors for.
+  ndimstangent : int
+      The dimension of the tangent space.
+  trans : :class:`TransformChain`
+  '''
+
+  __slots__ = '_root', '_ndimstangent', '_opposite', '_trans'
+
+  @types.apply_annotations
+  def __init__(self, roots:types.tuple[strictroot], ndimstangent:types.strictint, trans:types.strict[TransformChain], _opposite:bool=None):
+    # NOTE: `trans` is only required because of the `SelectChain` test in `Opposite.simplified`.
+    self._root, = roots
+    self._ndimstangent = ndimstangent
+    self._opposite = _opposite
+    self._trans = trans
+    super().__init__(args=[EVALARGS, trans], shape=[self._root.ndims, self._root.ndims], dtype=float)
+
+  def evalf(self, evalargs, _trans):
+    trans = evalargs['_transforms'][1 if self._opposite else 0]
+    points = evalargs['_points']
+
+    ndims = self._root.ndims
+    assert trans == _trans
+    assert (trans[0].todims if trans else points.ndims) == ndims
+    if points.ndims != self._ndimstangent:
+      raise ValueError('expected a {}D tangent space, but got a {}D space'.format(self._ndimstangent, points.ndimstangent))
+
+    return transform.linearfrom(trans, ndims)[_]
+
+  @util.positional_only
+  def prepare_eval(self, *, opposite=False, kwargs=...):
+    if self._opposite is not None:
+      raise ValueError('prepare already called')
+    return RootBasis((self._root,), self._ndimstangent, self._trans.prepare_eval(opposite=opposite, **kwargs), _opposite=opposite)
+
+  def _derivative(self, var, seen):
+    return zeros(self.shape+var.shape, dtype=float)
 
 class GramSchmidt(Array):
 
@@ -1122,23 +1180,29 @@ class Product(Array):
 
 class ApplyTransforms(Array):
 
-  __slots__ = 'trans'
+  __slots__ = '_head', '_tail'
 
   @types.apply_annotations
-  def __init__(self, trans:types.strict[TransformChain], points:strictevaluable=POINTS):
-    self.trans = trans
-    super().__init__(args=[points, trans], shape=[trans.todims], dtype=float)
+  def __init__(self, head:types.strict[TransformChain], tail:types.strict[TransformChain], points:strictevaluable=POINTS):
+    assert head.roots == tail.roots
+    self._head = head
+    self._tail = tail
+    super().__init__(args=[points, tail], shape=[self._tail.todims], dtype=float)
 
   @property
   def roots(self):
-    return self.trans.roots
+    return self._head.roots
 
   def evalf(self, points, chain):
     return transform.apply(chain, points)
 
   def _derivative(self, var, seen):
     if isinstance(var, LocalCoords) and len(var) > 0:
-      return LinearFrom(self.trans, len(var))
+      return LinearFrom(self._tail, len(var))
+    elif isinstance(var, RootCoords) and self.roots == var.roots and len(var) > 0:
+      if self._head.fromdims != len(var):
+        raise NotImplementedError('transform contains updims')
+      return Inverse(Linear(self._head, len(var), todims=self._head.root.ndims))
     return zeros(self.shape+var.shape)
 
 class LinearFrom(Array):
@@ -2682,7 +2746,7 @@ class Argument(DerivativeTargetBase):
       for i, sh in enumerate(self.shape):
         result = diagonalize(result, i, i+self.ndim)
       return result
-    elif isinstance(var, LocalCoords):
+    elif isinstance(var, (RootCoords, LocalCoords)):
       return Argument(self._name, self.shape+var.shape, self._derivs+(var,))
     else:
       return zeros(self.shape+var.shape)
@@ -2705,6 +2769,23 @@ class LocalCoords(DerivativeTargetBase):
 
   def evalf(self):
     raise Exception('LocalCoords should not be evaluated')
+
+class RootCoords(DerivativeTargetBase):
+  'root coords derivative target'
+
+  __slots__ = 'root'
+
+  @types.apply_annotations
+  def __init__(self, root:strictroot):
+    self.root = root
+    super().__init__(args=[], shape=[root.ndims], dtype=float)
+
+  @property
+  def roots(self):
+    return frozenset((self.root,))
+
+  def evalf(self):
+    raise Exception('RootCoords should not be evaluated')
 
 class DelayedJacobian(Array):
   '''
@@ -3232,7 +3313,7 @@ class Basis(Array):
     self.ndimsdomain = ndims
 
     self._index, head, tail = TransformsIndexWithTail(self.transforms, ndims, trans)
-    self._points = ApplyTransforms(tail)
+    self._points = ApplyTransforms(head, tail)
     self._trans = trans
     super().__init__(args=(self._index, self._points), shape=(ndofs,), dtype=float)
 
@@ -3902,7 +3983,7 @@ def blocks(arg):
   return asarray(arg).simplified.blocks
 
 def rootcoords(root):
-  return ApplyTransforms(SelectChain((root,)))
+  return ApplyTransforms(EmptyTransformChain(root=root, todims=root.ndims, fromdims=root.ndims), SelectChain((root,)))
 
 def opposite(arg):
   return Opposite(arg)
@@ -4052,6 +4133,46 @@ def localgradient(arg, ndims):
   'local derivative'
 
   return derivative(arg, LocalCoords(ndims))
+
+def rootgradient(arg, roots):
+  return concatenate([derivative(arg, RootCoords(root)) for root in roots], axis=-1)
+
+def roottangent(roots, ndimstangent):
+  '''Returns the orthonormal vectors spanning the tangent space.
+
+  Parameters
+  ----------
+  roots : :class:`tuple` or :class:`Root` objects
+      The roots to compute the tangent vectors for.
+  ndimstangent : int
+      The dimension of the tangent space.
+
+  Returns
+  -------
+  :class:`Array`
+      The tangent vectors with shape `(sum(root.ndims for root in roots), ndims)`.
+  '''
+
+  return GramSchmidt(RootBasis(roots, ndimstangent, SelectChain(roots)))[:,:ndimstangent]
+
+def rootnormal(roots, ndimsnormal):
+  '''Returns the orthonormal vectors spanning the normal space.
+
+  Parameters
+  ----------
+  roots : :class:`tuple` or :class:`Root` objects
+      The roots to compute the normal vectors for.
+  ndimstangent : int
+      The dimension of the normal space.
+
+  Returns
+  -------
+  :class:`Array`
+      The tangent vectors with shape `(sum(root.ndims for root in roots), ndims)`.
+  '''
+
+  ndimstangent = builtins.sum(root.ndims for root in roots) - ndimsnormal
+  return GramSchmidt(RootBasis(roots, ndimstangent, SelectChain(roots)))[:,ndimstangent:]
 
 def dotnorm(arg, coords):
   'normal component'
