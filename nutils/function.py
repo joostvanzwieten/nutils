@@ -636,6 +636,29 @@ class Array(Evaluable):
       return Constant(const)
     return super().optimized_for_numpy
 
+class RootVectors(Array):
+  '''Orthonormal vectors spanning the tangent space and the complement.
+
+  The first n vectors span the tangent space of the manifold, the remainder
+  span the complement.
+  '''
+
+  __slots__ = ()
+
+  def __init__(self, ndims, trans=TRANS):
+    super().__init__(args=[trans], shape=(ndims,ndims), dtype=float)
+
+  def evalf(self, chain):
+    V = numpy.array(transform.linearfrom(chain[1:], self.shape[0]), copy=True, dtype=float)
+    for i in range(self.shape[0]):
+      if i > 0:
+        V[:,i] -= numpy.dot(V[:,:i], numpy.dot(V[:,:i].T, V[:,i]))
+      V[:,i] /= numpy.linalg.norm(V[:,i])
+    return V[_]
+
+  def _derivative(self, var, seen):
+    return zeros(self.shape + var.shape)
+
 class Normal(Array):
   'normal'
 
@@ -3653,9 +3676,6 @@ def ones_like(arr):
 def reciprocal(arg):
   return power(arg, -1)
 
-def grad(arg, coords, ndims=0):
-  return asarray(arg).grad(coords, ndims)
-
 def symgrad(arg, coords, ndims=0):
   return asarray(arg).symgrad(coords, ndims)
 
@@ -3978,9 +3998,6 @@ def dotnorm(arg, coords):
   'normal component'
 
   return sum(arg * coords.normal(), -1)
-
-def normal(geom):
-  return geom.normal()
 
 def kronecker(arg, axis, length, pos):
   arg = asarray(arg)
@@ -4437,9 +4454,9 @@ class Namespace:
 def normal(arg, exterior=False):
   assert arg.ndim == 1
   if not exterior:
-    lgrad = localgradient(arg, len(arg))
+    lgrad = dot(rootgradient(arg, len(arg))[:,:,_], RootVectors(len(arg))[_,:,:], 1)
     return Normal(lgrad)
-  lgrad = localgradient(arg, len(arg)-1)
+  lgrad = rootgradient(arg, len(arg)-1)
   if len(arg) == 2:
     return asarray([lgrad[1,0], -lgrad[0,0]]).normalized()
   if len(arg) == 3:
@@ -4450,7 +4467,7 @@ def grad(self, geom, ndims=0):
   assert geom.ndim == 1
   if ndims <= 0:
     ndims += geom.shape[0]
-  J = localgradient(geom, ndims)
+  J = rootgradient(geom, ndims)
   if J.shape[0] == J.shape[1]:
     Jinv = inverse(J)
   elif J.shape[0] == J.shape[1] + 1: # gamma gradient
@@ -4459,7 +4476,7 @@ def grad(self, geom, ndims=0):
     Jinv = dot(J[_,:,:], Ginv[:,_,:], -1)
   else:
     raise Exception('cannot invert {}x{} jacobian'.format(J.shape))
-  return dot(localgradient(self, ndims)[...,_], Jinv, -2)
+  return dot(rootgradient(self, ndims)[...,_], Jinv, -2)
 
 def dotnorm(arg, geom, axis=-1):
   axis = numeric.normdim(arg.ndim, axis)
