@@ -362,12 +362,13 @@ class TransformChain(Evaluable):
   Evaluates to a tuple of :class:`nutils.transform.TransformItem` objects.
   '''
 
-  __slots__ = 'root', 'todims'
+  __slots__ = 'root', 'todims', 'fromdims'
 
   @types.apply_annotations
-  def __init__(self, root:strictroot, args:types.tuple[strictevaluable], todims:types.strictint=None):
+  def __init__(self, root:strictroot, args:types.tuple[strictevaluable], todims:types.strictint=None, fromdims:types.strictint=None):
     self.root = root
     self.todims = todims
+    self.fromdims = fromdims
     super().__init__(args)
 
   @property
@@ -398,10 +399,10 @@ class TransformChainFromTuple(TransformChain):
 
   __slots__ = 'index'
 
-  def __init__(self, root:strictroot, values:strictevaluable, index:types.strictint, todims:types.strictint=None):
+  def __init__(self, root:strictroot, values:strictevaluable, index:types.strictint, todims:types.strictint=None, fromdims:types.strictint=None):
     assert 0 <= index < len(values)
     self.index = index
-    super().__init__(root, args=[values], todims=todims)
+    super().__init__(root, args=[values], todims=todims, fromdims=fromdims)
 
   def evalf(self, values):
     return values[self.index]
@@ -426,11 +427,15 @@ class TransformsIndexWithTail(Evaluable):
     return numpy.array(index)[None], tail
 
   def __len__(self):
-    return 2
+    return 3
 
   @property
   def index(self):
     return ArrayFromTuple(self, index=0, shape=(), dtype=int)
+
+  @property
+  def head(self):
+    return GetTransform(self._trans.root, self._transforms, self.index, self._fromdims)
 
   @property
   def tail(self):
@@ -438,7 +443,22 @@ class TransformsIndexWithTail(Evaluable):
 
   def __iter__(self):
     yield self.index
+    yield self.head
     yield self.tail
+
+class GetTransform(TransformChain):
+
+  __slots__ = 'transforms', 'index'
+
+  @types.apply_annotations
+  def __init__(self, root:strictroot, transforms:transformseq.stricttransforms, index:asarray, fromdims:types.strictint):
+    assert index.ndim == 0 and index.dtype == int
+    self.transforms = transforms
+    super().__init__(args=[index], root=root, fromdims=fromdims, todims=root.ndims)
+
+  def evalf(self, index):
+    index, = index
+    return self.transforms[index][1:]
 
 # ARRAYFUNC
 #
@@ -3173,7 +3193,7 @@ class Basis(Array):
     self.transforms = transforms
     self.ndimsdomain = ndims
 
-    self._index, tail = TransformsIndexWithTail(self.transforms, ndims, trans)
+    self._index, head, tail = TransformsIndexWithTail(self.transforms, ndims, trans)
     self._points = ApplyTransforms(tail)
     self._trans = trans
     super().__init__(args=(self._index, self._points), shape=(ndofs,), dtype=float)
@@ -4049,7 +4069,7 @@ def eig(arg, axes=(-2,-1), symmetric=False):
 
 @types.apply_annotations
 def elemwise(roots:types.tuple[strictroot], transforms:transformseq.stricttransforms, ndims:types.strictint, values:types.tuple[types.frozenarray]):
-  index, tail = TransformsIndexWithTail(transforms, ndims, SelectChain(roots))
+  index = TransformsIndexWithTail(transforms, ndims, SelectChain(roots)).index
   return Elemwise(values, index, dtype=float)
 
 def take(arg, index, axis):
