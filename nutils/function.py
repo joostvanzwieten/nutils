@@ -1071,28 +1071,35 @@ class Product(Array):
 
 class ApplyTransforms(Array):
 
-  __slots__ = 'trans',
+  __slots__ = '_head', '_tail'
 
   @types.apply_annotations
-  def __init__(self, trans:types.strict[TransformChain], points:strictevaluable=POINTS):
-    self.trans = trans
-    super().__init__(args=[points, trans], shape=[trans.todims], dtype=float)
+  def __init__(self, head:types.strict[TransformChain], tail:types.strict[TransformChain], points:strictevaluable=POINTS):
+    self._head = head
+    self._tail = tail
+    super().__init__(args=[tail, points], shape=[self._tail.todims], dtype=float)
 
-  def evalf(self, points, chain):
-    return transform.apply(chain, points)
+  def evalf(self, tail, points):
+    return transform.apply(tail, points)
 
   def _derivative(self, var, seen):
     if isinstance(var, LocalCoords) and len(var) > 0:
-      return LinearFrom(self.trans, len(var))
+      return LinearFrom(self._tail, len(var))
+    elif isinstance(var, RootCoords) and len(var) > 0:
+      if self._head.fromdims != len(var):
+        raise NotImplementedError('transform contains updims')
+      return Inverse(LinearFrom(self._head, len(var), todims=len(var)))
     return zeros(self.shape+var.shape)
 
 class LinearFrom(Array):
 
-  __slots__ = ()
+  __slots__ = '_trans'
+  __cache__ = 'simplified'
 
   @types.apply_annotations
-  def __init__(self, trans:types.strict[TransformChain], fromdims:types.strictint):
-    super().__init__(args=[trans], shape=(trans.todims, fromdims), dtype=float)
+  def __init__(self, trans:types.strict[TransformChain], fromdims:types.strictint, todims:types.strictint=None):
+    self._trans = trans
+    super().__init__(args=[trans], shape=(todims or trans.todims, fromdims), dtype=float)
 
   def evalf(self, chain):
     todims, fromdims = self.shape
@@ -1101,6 +1108,12 @@ class LinearFrom(Array):
 
   def _derivative(self, var, seen):
     return zeros(self.shape+var.shape)
+
+  @property
+  def simplified(self):
+    if isinstance(self._trans, EmptyTransformChain) and self._trans.todims is not None:
+      return eye(self._trans.todims)
+    return self
 
 class Inverse(Array):
   '''
@@ -2603,7 +2616,7 @@ class Argument(DerivativeTargetBase):
       for i, sh in enumerate(self.shape):
         result = diagonalize(result, i, i+self.ndim)
       return result
-    elif isinstance(var, LocalCoords):
+    elif isinstance(var, (RootCoords, LocalCoords)):
       return Argument(self._name, self.shape+var.shape, self._derivs+(var,))
     else:
       return zeros(self.shape+var.shape)
@@ -2626,6 +2639,18 @@ class LocalCoords(DerivativeTargetBase):
 
   def evalf(self):
     raise Exception('LocalCoords should not be evaluated')
+
+class RootCoords(DerivativeTargetBase):
+  'root coords derivative target'
+
+  __slots__ = ()
+
+  @types.apply_annotations
+  def __init__(self, ndims:types.strictint):
+    super().__init__(args=[], shape=[ndims], dtype=float)
+
+  def evalf(self):
+    raise Exception('RootCoords should not be evaluated')
 
 class DelayedJacobian(Array):
   '''
@@ -3127,7 +3152,7 @@ class Basis(Array):
     self.transforms = transforms
 
     self._index, head, tail = TransformsIndexWithTail(self.transforms, trans)
-    self._points = ApplyTransforms(tail)
+    self._points = ApplyTransforms(head, tail)
     super().__init__(args=(self._index, self._points), shape=(ndofs,), dtype=float)
 
   def evalf(self, index, points):
@@ -3795,7 +3820,7 @@ def blocks(arg):
   return asarray(arg).simplified.blocks
 
 def rootcoords(ndims):
-  return ApplyTransforms(PopHead(ndims))
+  return ApplyTransforms(EmptyTransformChain(todims=ndims, fromdims=ndims), PopHead(ndims))
 
 def opposite(arg):
   return Opposite(arg)
@@ -3945,6 +3970,9 @@ def localgradient(arg, ndims):
   'local derivative'
 
   return derivative(arg, LocalCoords(ndims))
+
+def rootgradient(arg, ndims):
+  return derivative(arg, RootCoords(ndims))
 
 def dotnorm(arg, coords):
   'normal component'

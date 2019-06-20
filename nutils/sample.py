@@ -233,7 +233,7 @@ class Sample(types.Singleton):
 
     index, head, tail = function.TransformsIndexWithTail(self.transforms[0], function.TRANS)
     I = function.Elemwise(self.index, index, dtype=int)
-    B = function.Sampled(function.ApplyTransforms(tail), expect=function.take(self.allcoords, I, axis=0))
+    B = function.Sampled(function.ApplyTransforms(head, tail), expect=function.take(self.allcoords, I, axis=0))
     return function.Inflate(func=B, dofmap=I, length=self.npoints, axis=0)
 
   def asfunction(self, array):
