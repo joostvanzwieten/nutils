@@ -1106,9 +1106,7 @@ class ApplyTransforms(Array):
     return transform.apply(tail, points)
 
   def _derivative(self, var, seen):
-    if isinstance(var, LocalCoords) and len(var) > 0:
-      return LinearFrom(self._tail, len(var))
-    elif isinstance(var, RootCoords) and len(var) > 0:
+    if isinstance(var, RootCoords) and len(var) > 0:
       if self._head.fromdims != len(var):
         raise NotImplementedError('transform contains updims')
       return Inverse(LinearFrom(self._head, len(var), todims=len(var)))
@@ -2639,7 +2637,7 @@ class Argument(DerivativeTargetBase):
       for i, sh in enumerate(self.shape):
         result = diagonalize(result, i, i+self.ndim)
       return result
-    elif isinstance(var, (RootCoords, LocalCoords)):
+    elif isinstance(var, RootCoords):
       return Argument(self._name, self.shape+var.shape, self._derivs+(var,))
     else:
       return zeros(self.shape+var.shape)
@@ -2650,18 +2648,6 @@ class Argument(DerivativeTargetBase):
   @util.positional_only
   def prepare_eval(self, kwargs=...):
     return zeros_like(self) if self._nderiv > 0 else self
-
-class LocalCoords(DerivativeTargetBase):
-  'local coords derivative target'
-
-  __slots__ = ()
-
-  @types.apply_annotations
-  def __init__(self, ndims:types.strictint):
-    super().__init__(args=[], shape=[ndims], dtype=float)
-
-  def evalf(self):
-    raise Exception('LocalCoords should not be evaluated')
 
 class RootCoords(DerivativeTargetBase):
   'root coords derivative target'
@@ -3984,11 +3970,6 @@ def derivative(func, var, seen=None):
     seen[func] = result
   assert result.shape == func.shape+var.shape, 'bug in {}._derivative'.format(func)
   return result
-
-def localgradient(arg, ndims):
-  'local derivative'
-
-  return derivative(arg, LocalCoords(ndims))
 
 def rootgradient(arg, ndims):
   return derivative(arg, RootCoords(ndims))
