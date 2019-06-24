@@ -549,7 +549,8 @@ class Topology(types.Singleton):
           xi = p.coords
           w = p.weights
           xi = (numpy.dot(w,xi) / w.sum())[_] if len(xi) > 1 else xi.copy()
-          J = function.localgradient(geom, self.ndims)
+          linear = transform.linear(self.transforms[ielem][1:], self.ndims)
+          J = function.dot(function.rootgradient(geom, linear.shape[0])[:,:,_], linear[_,:,:], 1)
           geom_J = function.Tuple((geom, J)).prepare_eval().simplified
           for iiter in range(maxiter):
             coord_xi, J_xi = geom_J.eval(_transforms=(self.transforms[ielem], self.opposites[ielem]), _points=xi, **arguments or {})
