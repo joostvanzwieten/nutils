@@ -537,7 +537,8 @@ def simplex(nodes, cnodes, coords, tags, btags, ptags, name='simplex'):
   transforms = transformseq.IdentifierTransforms(ndims=ndims, name=name, length=nelems)
   topo = topology.SimplexTopology(nodes, transforms, transforms)
   coeffs = element.getsimplex(ndims).get_poly_coeffs('lagrange', degree=degree)
-  basis = function.PlainBasis([coeffs] * nelems, cnodes, nverts, topo.transforms)
+  index, points = function.transform_index_points(topo.transforms)
+  basis = function.PlainBasis([coeffs] * nelems, cnodes, nverts, index, points)
   geom = (basis[:,_] * coords).sum(0)
 
   connectivity = topo.connectivity

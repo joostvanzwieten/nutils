@@ -836,18 +836,18 @@ class jacobian(TestCase):
 jacobian(delayed=True)
 jacobian(delayed=False)
 
-@parametrize
 class basis(TestCase):
 
-  def setUp(self):
-    super().setUp()
-    self.checknelems = len(self.checkcoeffs)
-    self.checksupp = [[] for i in range(self.checkndofs)]
-    for ielem, dofs in enumerate(self.checkdofs):
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    cls.checknelems = len(cls.checkcoeffs)
+    cls.checksupp = [[] for i in range(cls.checkndofs)]
+    for ielem, dofs in enumerate(cls.checkdofs):
       for dof in dofs:
-        self.checksupp[dof].append(ielem)
-    assert len(self.checkcoeffs) == len(self.checkdofs)
-    assert all(len(c) == len(d) for c, d in zip(self.checkcoeffs, self.checkdofs))
+        cls.checksupp[dof].append(ielem)
+    assert len(cls.checkcoeffs) == len(cls.checkdofs)
+    assert all(len(c) == len(d) for c, d in zip(cls.checkcoeffs, cls.checkdofs))
 
   def test_shape(self):
     self.assertEqual(self.basis.shape, (self.checkndofs,))
@@ -966,67 +966,111 @@ class basis(TestCase):
     return result.tolist()
 
   def test_evalf(self):
-    ref = element.PointReference() if self.basis.transforms.fromdims == 0 else element.LineReference()**self.basis.transforms.fromdims
+    ref = element.PointReference() if self.transforms.fromdims == 0 else element.LineReference()**self.transforms.fromdims
     points = ref.getpoints('bezier', 4).coords
     with self.assertWarnsRegex(function.ExpensiveEvaluationWarning, 'using explicit basis evaluation.*'):
       for ielem in range(self.checknelems):
         self.assertEqual(self.basis.evalf([ielem], points).tolist(), self.checkeval(ielem, points))
 
   def test_simplified(self):
-    ref = element.PointReference() if self.basis.transforms.fromdims == 0 else element.LineReference()**self.basis.transforms.fromdims
+    ref = element.PointReference() if self.transforms.fromdims == 0 else element.LineReference()**self.transforms.fromdims
     points = ref.getpoints('bezier', 4).coords
     simplified = self.basis.simplified
     with _builtin_warnings.catch_warnings():
       _builtin_warnings.simplefilter('ignore', category=function.ExpensiveEvaluationWarning)
       for ielem in range(self.checknelems):
-        value = simplified.prepare_eval().eval(_transforms=(self.basis.transforms[ielem],), _points=points)
+        value = simplified.prepare_eval().eval(_transforms=(self.transforms[ielem],), _points=points)
         if value.shape[0] == 1:
           value = numpy.tile(value, (points.shape[0], 1))
         self.assertEqual(value.tolist(), self.checkeval(ielem, points))
 
-basis(
-  'PlainBasis',
-  basis=function.PlainBasis([[1],[2,3],[4,5],[6]], [[0],[2,3],[1,3],[2]], 4, transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0)),
-  checkcoeffs=[[1],[2,3],[4,5],[6]],
-  checkdofs=[[0],[2,3],[1,3],[2]],
-  checkndofs=4)
-basis(
-  'DiscontBasis',
-  basis=function.DiscontBasis([[1],[2,3],[4,5],[6]], transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0)),
-  checkcoeffs=[[1],[2,3],[4,5],[6]],
-  checkdofs=[[0],[1,2],[3,4],[5]],
-  checkndofs=6)
-basis(
-  'MaskedBasis',
-  basis=function.MaskedBasis(function.PlainBasis([[1],[2,3],[4,5],[6]], [[0],[2,3],[1,3],[2]], 4, transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0)), [0,2]),
-  checkcoeffs=[[1],[2],[],[6]],
-  checkdofs=[[0],[1],[],[1]],
-  checkndofs=2)
-basis(
-  'PrunedBasis',
-  basis=function.PrunedBasis(function.PlainBasis([[1],[2,3],[4,5],[6]], [[0],[2,3],[1,3],[2]], 4, transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0)), [0,2]),
-  checkcoeffs=[[1],[4,5]],
-  checkdofs=[[0],[1,2]],
-  checkndofs=3)
+class PlainBasis(basis):
 
-structtrans4 = transformseq.StructuredTransforms(transform.Identifier(1, 'test'), [transformseq.DimAxis(0,4,False)], 0)
-structtrans4p = transformseq.StructuredTransforms(transform.Identifier(1, 'test'), [transformseq.DimAxis(0,4,True)], 0)
-structtrans22 = transformseq.StructuredTransforms(transform.Identifier(2, 'test'), [transformseq.DimAxis(0,2,False),transformseq.DimAxis(0,2,False)], 0)
-basis(
-  'StructuredBasis1D',
-  basis=function.StructuredBasis([[[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]]], [[0,1,2,3]], [[2,3,4,5]], [5], structtrans4, [4]),
-  checkcoeffs=[[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]],
-  checkdofs=[[0,1],[1,2],[2,3],[3,4]],
-  checkndofs=5)
-basis(
-  'StructuredBasis1DPeriodic',
-  basis=function.StructuredBasis([[[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]]], [[0,1,2,3]], [[2,3,4,5]], [4], structtrans4p, [4]),
-  checkcoeffs=[[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]],
-  checkdofs=[[0,1],[1,2],[2,3],[3,0]],
-  checkndofs=4)
-basis(
-  'StructuredBasis2D',
-  basis=function.StructuredBasis([[[[1],[2]],[[3],[4]]],[[[5],[6]],[[7],[8]]]], [[0,1],[0,1]], [[2,3],[2,3]], [3,3], structtrans22, [2,2]),
-  checkcoeffs=[[[[5]],[[6]],[[10]],[[12]]],[[[7]],[[8]],[[14]],[[16]]],[[[15]],[[18]],[[20]],[[24]]],[[[21]],[[24]],[[28]],[[32]]]],
-  checkdofs=[[0,1,3,4],[1,2,4,5],[3,4,6,7],[4,5,7,8]],
-  checkndofs=9)
+  @classmethod
+  def setUpClass(cls):
+    cls.transforms = transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0)
+    index, points = function.transform_index_points(cls.transforms)
+    cls.basis = function.PlainBasis([[1],[2,3],[4,5],[6]], [[0],[2,3],[1,3],[2]], 4, index, points)
+    cls.checkcoeffs = [[1],[2,3],[4,5],[6]]
+    cls.checkdofs = [[0],[2,3],[1,3],[2]]
+    cls.checkndofs = 4
+    super().setUpClass()
+
+class DiscontBasis(basis):
+
+  @classmethod
+  def setUpClass(cls):
+    cls.transforms = transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0)
+    index, points = function.transform_index_points(cls.transforms)
+    cls.basis = function.DiscontBasis([[1],[2,3],[4,5],[6]], index, points)
+    cls.checkcoeffs = [[1],[2,3],[4,5],[6]]
+    cls.checkdofs = [[0],[1,2],[3,4],[5]]
+    cls.checkndofs = 6
+    super().setUpClass()
+
+class MaskedBasis(basis):
+
+  @classmethod
+  def setUpClass(cls):
+    cls.transforms = transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0)
+    index, points = function.transform_index_points(cls.transforms)
+    parent = function.PlainBasis([[1],[2,3],[4,5],[6]], [[0],[2,3],[1,3],[2]], 4, index, points)
+    cls.basis = function.MaskedBasis(parent, [0,2], index, points)
+    cls.checkcoeffs = [[1],[2],[],[6]]
+    cls.checkdofs = [[0],[1],[],[1]]
+    cls.checkndofs = 2
+    super().setUpClass()
+
+class PrunedBasis(basis):
+
+  @classmethod
+  def setUpClass(cls):
+    parent_transforms = transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0)
+    parent_index, parent_points = function.transform_index_points(parent_transforms)
+    parent = function.PlainBasis([[1],[2,3],[4,5],[6]], [[0],[2,3],[1,3],[2]], 4, parent_index, parent_points)
+    transmap = numpy.array([0,2])
+    cls.transforms = parent_transforms[transmap]
+    index, points = function.transform_index_points(cls.transforms)
+    cls.basis = function.PrunedBasis(parent, transmap, index, points)
+    cls.checkcoeffs = [[1],[4,5]]
+    cls.checkdofs = [[0],[1,2]]
+    cls.checkndofs = 3
+    super().setUpClass()
+
+class StructuredBasis1D(basis):
+
+  @classmethod
+  def setUpClass(cls):
+    cls.transforms = transformseq.StructuredTransforms(transform.Identifier(1, 'test'), [transformseq.DimAxis(0,4,False)], 0)
+    index, points = function.transform_index_points(cls.transforms)
+    cls.basis = function.StructuredBasis([[[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]]], [[0,1,2,3]], [[2,3,4,5]], [5], [4], index, points)
+    cls.checkcoeffs = [[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]]
+    cls.checkdofs = [[0,1],[1,2],[2,3],[3,4]]
+    cls.checkndofs = 5
+    super().setUpClass()
+
+class StructuredBasis1DPeriodic(basis):
+
+  @classmethod
+  def setUpClass(cls):
+    cls.transforms = transformseq.StructuredTransforms(transform.Identifier(1, 'test'), [transformseq.DimAxis(0,4,True)], 0)
+    index, points = function.transform_index_points(cls.transforms)
+    cls.basis = function.StructuredBasis([[[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]]], [[0,1,2,3]], [[2,3,4,5]], [4], [4], index, points)
+    cls.checkcoeffs = [[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]]
+    cls.checkdofs = [[0,1],[1,2],[2,3],[3,0]]
+    cls.checkndofs = 4
+    super().setUpClass()
+
+class StructuredBasis2D(basis):
+
+  @classmethod
+  def setUpClass(cls):
+    cls.transforms = transformseq.StructuredTransforms(transform.Identifier(2, 'test'), [transformseq.DimAxis(0,2,False),transformseq.DimAxis(0,2,False)], 0)
+    index, points = function.transform_index_points(cls.transforms)
+    cls.basis = function.StructuredBasis([[[[1],[2]],[[3],[4]]],[[[5],[6]],[[7],[8]]]], [[0,1],[0,1]], [[2,3],[2,3]], [3,3], [2,2], index, points)
+    cls.checkcoeffs = [[[[5]],[[6]],[[10]],[[12]]],[[[7]],[[8]],[[14]],[[16]]],[[[15]],[[18]],[[20]],[[24]]],[[[21]],[[24]],[[28]],[[32]]]]
+    cls.checkdofs = [[0,1,3,4],[1,2,4,5],[3,4,6,7],[4,5,7,8]]
+    cls.checkndofs = 9
+    super().setUpClass()
+
+del basis
