@@ -43,7 +43,7 @@ multiple integrals simultaneously, which has the advantage that it can
 efficiently combine common substructures.
 '''
 
-from . import types, points, util, function, parallel, numeric, matrix, transformseq
+from . import types, points, util, function, parallel, numeric, matrix, transformseq, transform
 import numpy, numbers, collections.abc, os, treelog as log
 
 graphviz = os.environ.get('NUTILS_GRAPHVIZ')
@@ -168,10 +168,16 @@ class Sample(types.Singleton):
     with parallel.ctxrange('integrating', self.nelems) as ielems:
       for ielem in ielems:
         points = self.points[ielem]
-        for iblock, (intdata, *indices) in enumerate(valueindexfunc.eval(_transforms=tuple(t[ielem] for t in self.transforms), _points=points.coords, **arguments)):
+        transforms = tuple(t[ielem] for t in self.transforms)
+        if self.ndims == 0 or len(transforms[0]) == 1:
+          detJ = 1
+        else:
+          J = transform.linear(transforms[0][1:], self.ndims)
+          detJ = abs(numpy.linalg.det(numpy.dot(J.T, J)))**0.5
+        for iblock, (intdata, *indices) in enumerate(valueindexfunc.eval(_transforms=transforms, _points=points.coords, **arguments)):
           s = slice(*offsets[iblock,ielem:ielem+2])
           data, index = data_index[block2func[iblock]]
-          w_intdata = numeric.dot(points.weights, intdata)
+          w_intdata = detJ * numeric.dot(points.weights, intdata)
           data[s] = w_intdata.ravel()
           si = (slice(None),) + (numpy.newaxis,) * (w_intdata.ndim-1)
           for idim, (ii,) in enumerate(indices):

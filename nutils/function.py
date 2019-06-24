@@ -3925,19 +3925,18 @@ def get(arg, iax, item):
 def jacobian(geom, ndims):
   '''
   Return :math:`\\sqrt{|J^T J|}` with :math:`J` the gradient of ``geom`` to the
-  local coordinate system with ``ndims`` dimensions (``localgradient(geom,
-  ndims)``).
+  root coordinate system with ``ndims`` dimensions.
   '''
 
   assert geom.ndim == 1
-  J = localgradient(geom, ndims)
-  cndims, = geom.shape
-  assert J.shape == (cndims,ndims), 'wrong jacobian shape: got {}, expected {}'.format(J.shape, (cndims, ndims))
-  assert cndims >= ndims, 'geometry dimension < topology dimension'
-  detJ = abs(determinant(J)) if cndims == ndims \
-    else 1. if ndims == 0 \
-    else abs(determinant((J[:,:,_] * J[:,_,:]).sum(0)))**.5
-  return detJ
+  if ndims == 0:
+    return 1.
+  J = rootgradient(geom, len(geom))
+  if len(geom) == ndims:
+    return abs(determinant(J))
+  else:
+    J = dot(J[:,:,_], RootVectors(len(geom))[_,:,:ndims], 1)
+    return abs(determinant((J[:,:,_] * J[:,_,:]).sum(0)))**.5
 
 def matmat(arg0, *args):
   'helper function, contracts last axis of arg0 with first axis of arg1, etc'
@@ -4087,8 +4086,7 @@ def mask(arg, mask, axis=0):
 def J(geometry, ndims=None):
   '''
   Return :math:`\\sqrt{|J^T J|}` with :math:`J` the gradient of ``geometry`` to
-  the local coordinate system with ``ndims`` dimensions (``localgradient(geom,
-  ndims)``).
+  the root coordinate system with ``ndims`` dimensions.
   '''
   if ndims is None:
     return DelayedJacobian(geometry)
