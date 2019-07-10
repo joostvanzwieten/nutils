@@ -36,9 +36,11 @@ def apply(chain, points):
 def canonical(chain):
   # keep at lowest ndims possible; this is the required form for bisection
   n = len(chain)
+  if n < 2:
+    return chain
   items = list(chain)
   i = 0
-  while items[i].fromdims > items[n-1].fromdims:
+  while items[i].fromdims > items[n-1].fromdims or any(isinstance(t, Manifold) for t in items[i:-1]):
     swapped = items[i+1].swapdown(items[i])
     if swapped:
       items[i:i+2] = swapped
@@ -53,6 +55,15 @@ def uppermost(chain):
   if n < 2:
     return tuple(chain)
   items = list(chain)
+  # Swap manifolds up.
+  ismanifold = tuple(isinstance(t, Manifold) for t in items)
+  if sum(ismanifold) > 1:
+    raise NotImplementedError
+  elif sum(ismanifold) == 1:
+    imanifold = ismanifold.index(True)
+    if items[imanifold].fromdims < items[-1].fromdims:
+      raise NotImplementedError
+    items = items[:imanifold] + items[imanifold+1:] + [items[imanifold]]
   i = n
   while items[i-1].todims < items[0].todims:
     swapped = items[i-2].swapup(items[i-1])
@@ -87,10 +98,11 @@ def linearfrom(chain, fromdims):
   return linear[:,:fromdims] if linear.shape[1] >= fromdims \
     else numpy.concatenate([linear, numpy.zeros((todims, fromdims-linear.shape[1]))], axis=1)
 
-def linear(chain, fromdims):
+def linear(chain, todims):
   if len(chain) == 0:
-    return numpy.eye(fromdims)
+    return numpy.eye(todims)
   else:
+    assert chain[0].todims == todims
     return functools.reduce(numpy.dot, (trans.linear for trans in chain))
 
 ## TRANSFORM ITEMS
@@ -123,7 +135,20 @@ class TransformItem(types.Singleton):
     return None
 
   def swapdown(self, other):
-    return None
+    if isinstance(other, Manifold) and self.fromdims == self.todims == other.fromdims:
+      return self, other
+    else:
+      return None
+
+  def separate(self, septodims):
+    if sum(septodims) != self.todims:
+      raise ValueError("'septodims' does not add up to 'todims'")
+    if septodims == (self.todims,):
+      return self,
+    elif self.todims in septodims:
+      return tuple(self if todims == self.todims else Identity(0) for todims in septodims)
+    else:
+      raise ValueError('Cannot separate {} into TransformItems with todims {}.'.format(self, septodims))
 
 stricttransformitem = types.strict[TransformItem]
 stricttransform = types.tuple[stricttransformitem]
@@ -272,6 +297,11 @@ class Identity(Shift):
   def __str__(self):
     return 'x'
 
+  def separate(self, septodims):
+    if sum(septodims) != self.todims:
+      raise ValueError("'septodims' does not add up to 'todims'")
+    return tuple(map(Identity, septodims))
+
 class Scale(Square):
   '''Affine transformation :math:`x ↦ a x + b`, with :math:`a` a scalar
 
@@ -322,13 +352,17 @@ class Updim(Matrix):
   '''
 
   __slots__ = 'isflipped',
-  __cache__ = 'ext',
+  __cache__ = 'ext', 'det'
 
   @types.apply_annotations
   def __init__(self, linear:types.frozenarray, offset:types.frozenarray, isflipped:bool):
     assert linear.shape[0] == linear.shape[1] + 1
     self.isflipped = isflipped
     super().__init__(linear, offset)
+
+  @property
+  def det(self):
+    return numpy.sqrt(numeric.det_exact(numpy.einsum('ki,kj->ij', self.linear, self.linear)))
 
   @property
   def ext(self):
@@ -340,8 +374,9 @@ class Updim(Matrix):
     return Updim(self.linear, self.offset, not self.isflipped)
 
   def swapdown(self, other):
-    if isinstance(other, TensorChild):
-      return ScaledUpdim(other, self), Identity(self.fromdims)
+    pass
+    #if isinstance(other, TensorChild):
+    #  return ScaledUpdim(other, self), Identity(self.fromdims)
 
 class SimplexEdge(Updim):
 
@@ -445,12 +480,69 @@ class ScaledUpdim(Updim):
   def flipped(self):
     return ScaledUpdim(self.trans1, self.trans2.flipped)
 
+  @property
+  def det(self):
+    return numpy.sqrt(numeric.det_exact(numpy.einsum('ki,kj->ij', self.linear, self.linear)))
+
+class NewScaledUpdim(Updim):
+  '''TransformItem for a non-manifold child of a (sufficiently refined) manifold
+
+  Both ``Manifold.swapup(self)`` and ``NewScaledUpdim.swapdown(Manifold)``
+  replace the :class:`Manifold` with ordinary transform items.
+  '''
+
+  __slots__ = 'trans1', 'trans2'
+
+  def __init__(self, trans1, trans2):
+    assert trans1.todims == trans1.fromdims == trans2.todims == trans2.fromdims + 1
+    self.trans1 = trans1
+    self.trans2 = trans2
+    super().__init__(numpy.dot(trans1.linear, trans2.linear), trans1.apply(trans2.offset), trans1.isflipped^trans2.isflipped)
+
+  def swapdown(self, other):
+    if isinstance(other, Manifold):
+      return self.trans2.swapdown(self.trans1) or (self.trans1, self.trans2)
+
+  @property
+  def flipped(self):
+    return NewScaledUpdim(self.trans1, self.trans2.flipped)
+
+  def separate(self, todims):
+    return tuple(NewScaledUpdim(t1, t2) if t2.fromdims < t2.todims else NewScaled(t1, t2) for t1, t2 in zip(self.trans1.separate(todims), self.trans2.separate(todims)))
+
+class NewScaled(Square):
+  '''TransformItem for a non-manifold child of a (sufficiently refined) manifold
+
+  Both ``Manifold.swapup(self)`` and ``NewScaledUpdim.swapdown(Manifold)``
+  replace the :class:`Manifold` with ordinary transform items.
+  '''
+
+  __slots__ = 'trans1', 'trans2'
+
+  def __init__(self, trans1, trans2):
+    assert trans1.todims == trans1.fromdims == trans2.todims == trans2.fromdims
+    self.trans1 = trans1
+    self.trans2 = trans2
+    super().__init__(numpy.dot(trans1.linear, trans2.linear), trans1.apply(trans2.offset))
+
+  def swapdown(self, other):
+    if isinstance(other, Manifold):
+      return self.trans2.swapdown(self.trans1) or (self.trans1, self.trans2)
+
+  @property
+  def flipped(self):
+    return NewScaled(self.trans1, self.trans2.flipped)
+
+  def separate(self, todims):
+    return tuple(map(NewScaled, self.trans1.separate(todims), self.trans2.separate(todims)))
+
 class TensorEdge1(Updim):
 
-  __slots__ = 'trans',
+  __slots__ = 'trans', '_ndims2'
 
   def __init__(self, trans1, ndims2):
     self.trans = trans1
+    self._ndims2 = ndims2
     super().__init__(linear=numeric.blockdiag([trans1.linear, numpy.eye(ndims2)]), offset=numpy.concatenate([trans1.offset, numpy.zeros(ndims2)]), isflipped=trans1.isflipped)
 
   def swapup(self, other):
@@ -474,18 +566,25 @@ class TensorEdge1(Updim):
       if swapped:
         edge, child = swapped
         return TensorEdge1(edge, other.trans2.todims), TensorChild(child, other.trans2) if child.fromdims else other.trans2
-      return ScaledUpdim(other, self), Identity(self.fromdims)
+      #return ScaledUpdim(other, self), Identity(self.fromdims)
 
   @property
   def flipped(self):
     return TensorEdge1(self.trans.flipped, self.fromdims-self.trans.fromdims)
 
+  def separate(self, septodims):
+    if self.todims in septodims:
+      return super().separate(septodims)
+    else:
+      return separate_tensor(self.trans, Identity(self._ndims2), septodims)
+
 class TensorEdge2(Updim):
 
-  __slots__ = 'trans'
+  __slots__ = 'trans', '_ndims1'
 
   def __init__(self, ndims1, trans2):
     self.trans = trans2
+    self._ndims1 = ndims1
     super().__init__(linear=numeric.blockdiag([numpy.eye(ndims1), trans2.linear]), offset=numpy.concatenate([numpy.zeros(ndims1), trans2.offset]), isflipped=trans2.isflipped^(ndims1%2))
 
   def swapup(self, other):
@@ -509,16 +608,22 @@ class TensorEdge2(Updim):
       if swapped:
         edge, child = swapped
         return TensorEdge2(other.trans1.todims, edge), TensorChild(other.trans1, child) if child.fromdims else other.trans1
-      return ScaledUpdim(other, self), Identity(self.fromdims)
+      #return ScaledUpdim(other, self), Identity(self.fromdims)
 
   @property
   def flipped(self):
     return TensorEdge2(self.fromdims-self.trans.fromdims, self.trans.flipped)
 
+  def separate(self, septodims):
+    if self.todims in septodims:
+      return super().separate(septodims)
+    else:
+      return separate_tensor(Identity(self._ndims1), self.trans, septodims)
+
 class TensorChild(Square):
 
   __slots__ = 'trans1', 'trans2'
-  __cache__ = 'det',
+  __cache__ = 'det'
 
   def __init__(self, trans1, trans2):
     assert trans1.fromdims and trans2.fromdims
@@ -531,6 +636,12 @@ class TensorChild(Square):
   @property
   def det(self):
     return self.trans1.det * self.trans2.det
+
+  def separate(self, septodims):
+    if self.todims in septodims:
+      return super().separate(septodims)
+    else:
+      return separate_tensor(self.trans1, self.trans2, septodims)
 
 class Identifier(Identity):
   '''Generic identifier
@@ -549,5 +660,81 @@ class Identifier(Identity):
 
   def __str__(self):
     return ':'.join(map(str, self._args))
+
+class Manifold(Identity):
+
+  __slots__ = ()
+
+  def separate(self, septodims):
+    if sum(septodims) != self.todims:
+      raise ValueError("'septodims' does not add up to 'todims'")
+    return tuple(map(Manifold, septodims))
+
+  @property
+  def flipped(self):
+    # FIXME: is this correct behavior?
+    return self
+
+  def swapup(self, other):
+    if isinstance(other, (NewScaled, NewScaledUpdim)):
+      return other.trans1, other.trans2
+
+def separate_tensor(trans1, trans2, septodims):
+  i = 0
+  while i < len(septodims) and sum(septodims[:i+1]) <= trans1.todims:
+    i += 1
+  s = sum(septodims[:i])
+  if s == trans1.todims:
+    septodims1 = septodims[:i]
+    septodims2 = septodims[i:]
+  else:
+    septodims1 = septodims[:i]+(trans1.todims-s,)
+    septodims2 = (septodims[i]-trans1.todims+s,)+septodims[i+1:]
+
+  septrans1 = trans1.separate(septodims1)
+  septrans2 = trans2.separate(septodims2)
+  if s == trans1.todims:
+    return septrans1 + septrans2
+  else:
+    return septrans1[:-1] + (join(septrans1[-1],septrans2[0]),) + septrans2[1:]
+
+def join(left, right):
+  if not isinstance(left, TransformItem) or not isinstance(right, TransformItem):
+    raise ValueError
+  if (type(left) is Identity or left.todims == 0) and (type(right) is Identity or right.todims == 0):
+    return Identity(left.todims+right.todims)
+  elif (type(left) is Identity or left.todims == 0) and right.todims > right.fromdims:
+    return TensorEdge2(left.todims, right)
+  elif (type(right) is Identity or right.todims == 0) and left.todims > left.fromdims:
+    return TensorEdge1(left, right.todims)
+  elif left.todims == left.fromdims and right.todims == right.fromdims:
+    return TensorChild(left, right)
+  else:
+    raise NotImplementedError
+
+def append_joined_item(trans, item, *, kind):
+  assert isinstance(trans, tuple) and all(isinstance(t, tuple) for t in trans)
+  assert isinstance(item, TransformItem)
+  sepitem = item.separate(tuple(t[-1].fromdims for t in trans))
+  #return tuple(t if type(i) is Identity else t+(i,) for t, i in zip(trans, sepitem))
+  return tuple(t if type(i) is Identity and kind == 'edge' else t+(SimplexChild(0,0),) if i == Identity(0) and kind == 'child' else t+(i,) for t, i in zip(trans, sepitem))
+
+def append_edge(trans, edge):
+  return append_joined_item(trans, edge, kind='edge')
+
+def append_child(trans, child):
+  return append_joined_item(trans, child, kind='child')
+
+def child_transforms(trans, ref):
+  return (append_child(trans, ctrans) for ctrans in ref.child_transforms)
+
+def unempty_child_transforms(trans, ref):
+  return (append_child(trans, ctrans) for ctrans, cref in ref.children if cref)
+
+def edge_transforms(trans, ref):
+  return (append_edge(trans, etrans) for etrans in ref.edge_transforms)
+
+def unempty_edge_transforms(trans, ref):
+  return (append_edge(trans, etrans) for etrans, eref in ref.edges if eref)
 
 # vim:sw=2:sts=2:et

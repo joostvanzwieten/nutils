@@ -227,16 +227,16 @@ broadcast = lambda *args: numpy.broadcast(*args) if len(args) > 1 else Broadcast
 def det_exact(A):
   # for some reason, numpy.linalg.det suffers from rounding errors
   A = numpy.asarray(A)
-  assert A.ndim == 2 and A.shape[0] == A.shape[1]
-  if len(A) == 0:
+  assert A.ndim >= 2 and A.shape[-2] == A.shape[-1]
+  if A.shape[-1] == 0:
     det = 1.
-  elif len(A) == 1:
-    det = A[0,0]
-  elif len(A) == 2:
-    ((a,b),(c,d)) = A
+  elif A.shape[-1] == 1:
+    det = A[...,0,0]
+  elif A.shape[-1] == 2:
+    a,b,c,d = (A[...,i,j] for i in range(2) for j in range(2))
     det = a*d - b*c
-  elif len(A) == 3:
-    ((a,b,c),(d,e,f),(g,h,i)) = A
+  elif A.shape[-1] == 3:
+    a,b,c,d,e,f,g,h,i = (A[...,i,j] for i in range(3) for j in range(3))
     det = a*e*i + b*f*g + c*d*h - c*e*g - b*d*i - a*f*h
   else:
     raise NotImplementedError('shape=' + str(A.shape))
@@ -537,6 +537,14 @@ def asboolean(array, size, ordered=True):
       raise Exception('indices are out of bounds')
     barray[array] = True
   return barray
+
+def gramschmidt(V):
+  assert V.ndim >= 2
+  assert V.shape[-2] >= V.shape[-1]
+  for i in range(V.shape[-1]):
+    if i > 0:
+      V[...,i] -= numpy.einsum('...ij,...j->...i', V[...,:i], numpy.einsum('...ji,...j->...i', V[...,:i], V[...,i]))
+    V[...,i] /= numpy.linalg.norm(V[...,i], axis=-1)[...,numpy.newaxis]
 
 if numpy.version.version >= '1.15':
   intersect1d = numpy.intersect1d

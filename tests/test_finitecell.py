@@ -6,7 +6,7 @@ class hierarchical(TestCase):
 
   def setUp(self):
     super().setUp()
-    self.ref0, self.geom = mesh.rectilinear([[0,1,2]])
+    self.ref0, self.geom = mesh.newrectilinear([[0,1,2]])
     self.ref1 = self.ref0.refined_by([1])
     self.ref2 = self.ref1.refined_by([1])
 
@@ -50,10 +50,10 @@ class trimmedboundary(TestCase):
   def setUp(self):
     super().setUp()
     if self.boundary:
-      domain0, self.geom = mesh.rectilinear([2,2,2])
+      domain0, self.geom = mesh.newrectilinear([2,2,2])
       self.domain0 = domain0.boundary['front']
     else:
-      self.domain0, self.geom = mesh.rectilinear([2,2])
+      self.domain0, self.geom = mesh.newrectilinear([2,2])
     if self.gridline:
       self.domain1 = self.domain0 - self.domain0[1:].withboundary(trimmed='left')
     else:
@@ -96,7 +96,7 @@ class specialcases_2d(TestCase):
 
   def setUp(self):
     super().setUp()
-    self.domain, self.geom = mesh.rectilinear([[0,.5,1]]*2)
+    self.domain, self.geom = mesh.newrectilinear([[0,.5,1]]*2)
 
   def test_almost_all_positive(self):
     x, y = self.geom
@@ -129,15 +129,25 @@ class specialcases_2d(TestCase):
   def test_inter_intra1(self):
     x, y = self.geom
     ttopo = self.domain.trim((x-.5)*(x-.75), maxrefine=2)
+    # ┏━━━┳━┯━┓
+    # ┃   ┃x│ ┃   Elements marked x are not part of ttopo.
+    # ┣━━━╋━┿━┫   Thin lines are manifolds.
+    # ┃   ┃x│ ┃
+    # ┗━━━┻━┷━┛
     self.check_connectivity(ttopo.connectivity)
-    self.assertEqual(len(ttopo.boundary), 14)
+    self.assertEqual(len(ttopo.boundary), 12)
     self.assertEqual(len(ttopo.interfaces), 2)
 
   def test_inter_intra2(self):
     x, y = self.geom
     ttopo = self.domain.trim((x-.25)*(x-.5), maxrefine=2)
+    # ┏━┯━┳━━━┓
+    # ┃ │x┃   ┃   Elements marked x are not part of ttopo.
+    # ┣━┿━╋━━━┫   Thin lines are manifolds.
+    # ┃ │x┃   ┃
+    # ┗━┷━┻━━━┛
     self.check_connectivity(ttopo.connectivity)
-    self.assertEqual(len(ttopo.boundary), 14)
+    self.assertEqual(len(ttopo.boundary), 12)
     self.assertEqual(len(ttopo.interfaces), 2)
 
 class specialcases_3d(TestCase):
@@ -146,7 +156,7 @@ class specialcases_3d(TestCase):
 
   def setUp(self):
     super().setUp()
-    self.domain, self.geom = mesh.rectilinear([[0,.5],[0,.5],[0,.5,1]])
+    self.domain, self.geom = mesh.newrectilinear([[0,.5],[0,.5],[0,.5,1]])
 
   def test_inter_elem(self):
     x, y, z = self.geom
@@ -160,7 +170,7 @@ class setoperations(TestCase):
 
   def setUp(self):
     super().setUp()
-    self.domain, self.geom = mesh.rectilinear([[-.5,-1./6,1./6,.5]]*2) # unit square
+    self.domain, self.geom = mesh.newrectilinear([[-.5,-1./6,1./6,.5]]*2) # unit square
     x, y = self.geom
     bottomright = self.domain.trim(x-y, maxrefine=0, name='trim1')
     self.right = bottomright.trim(x+y, maxrefine=0, name='trim2')
@@ -197,11 +207,11 @@ class cutdomain(TestCase):
   def setUp(self):
     super().setUp()
     if self.ndims == 3:
-      domain, geom = mesh.rectilinear((numpy.linspace(0,1,self.nelems+1),)*3)
+      domain, geom = mesh.newrectilinear((numpy.linspace(0,1,self.nelems+1),)*3)
       self.domain = domain
       self.geom = geom
     elif self.ndims == 2:
-      domain, geom = mesh.rectilinear((numpy.linspace(0,1,self.nelems+1),)*2)
+      domain, geom = mesh.newrectilinear((numpy.linspace(0,1,self.nelems+1),)*2)
       self.domain = domain
       self.geom = geom
     else:
@@ -262,7 +272,7 @@ cutdomain('circle', ndims=2, nelems=2, maxrefine=5, errtol=2.1e-4)
 class multitrim(TestCase):
 
   def test(self):
-    domain, geom = mesh.rectilinear([[-1,1],[-1,1]])
+    domain, geom = mesh.newrectilinear([[-1,1],[-1,1]])
     geom_rel = (function.rotmat(numpy.pi/6) * geom).sum(-1)
     for itrim in range(4):
       domain = domain.trim(.7+(1-itrim%2*2)*geom_rel[itrim//2], maxrefine=1, name='trim{}'.format(itrim), ndivisions=16)
@@ -278,7 +288,7 @@ class leveltopo(TestCase):
 
   def setUp(self):
     super().setUp()
-    self.domain0, self.geom = mesh.rectilinear([2,2])
+    self.domain0, self.geom = mesh.newrectilinear([2,2])
     self.domain1 = self.domain0.refined
 
   def test_uniform(self):
@@ -316,7 +326,7 @@ class trim_conforming(TestCase):
 
   def setUp(self):
     super().setUp()
-    self.domain, geom = mesh.rectilinear([4,4])
+    self.domain, geom = mesh.newrectilinear([4,4])
     self.domain1 = self.domain.trim(3-geom[0], maxrefine=2, name='trimright')
     self.domain2 = self.domain1.trim(3-geom[1], maxrefine=2, name='trimtop')
     self.domain3 = self.domain2.trim(geom[0]-1, maxrefine=2, name='trimleft')
@@ -371,7 +381,7 @@ class partialtrim(TestCase):
   # +-----+-----+
 
   def setUp(self):
-    self.topo, geom = mesh.rectilinear([2,2])
+    self.topo, geom = mesh.newrectilinear([2,2])
     self.topoA = self.topo.trim(geom[0]-1+geom[1]*(geom[1]-.5), maxrefine=1)
     self.topoB = self.topo - self.topoA
 
@@ -380,10 +390,10 @@ class partialtrim(TestCase):
     self.assertEqual(len(self.topoB), 2)
 
   def test_boundaries(self):
-    self.assertEqual(len(self.topoA.boundary), 11)
-    self.assertEqual(len(self.topoB.boundary), 8)
-    self.assertEqual(len(self.topoA.boundary['trimmed']), 5)
-    self.assertEqual(len(self.topoB.boundary['trimmed']), 5)
+    self.assertEqual(len(self.topoA.boundary), 9)
+    self.assertEqual(len(self.topoB.boundary), 6)
+    self.assertEqual(len(self.topoA.boundary['trimmed']), 3)
+    self.assertEqual(len(self.topoB.boundary['trimmed']), 3)
 
   def test_interfaces(self):
     self.assertEqual(len(self.topoA.interfaces), 4)
@@ -394,7 +404,7 @@ class partialtrim(TestCase):
     self.assertEqual(set(self.topoB.boundary['trimmed'].transforms), set(self.topoA.boundary['trimmed'].opposites))
 
   def test_opposites(self):
-    ielem = function.elemwise(self.topo.transforms, numpy.arange(4))
+    ielem = function.elemwise(self.topo.transforms, self.topo.roots, numpy.arange(4))
     sampleA = self.topoA.boundary['trimmed'].sample('uniform', 1)
     sampleB = self.topoB.boundary['trimmed'].sample('uniform', 1)
     self.assertEqual(set(sampleB.eval(ielem)), {0,1})
@@ -406,5 +416,5 @@ class partialtrim(TestCase):
     # the base implementation should create the correct boundary topology but
     # without interface opposites and without the trimmed group
     for topo in self.topoA, self.topoB:
-      alttopo = topology.ConnectedTopology(topo.references, topo.transforms, topo.opposites, topo.connectivity)
+      alttopo = topology.ConnectedTopology(topo.roots, topo.references, topo.transforms, topo.opposites, topo.connectivity)
       self.assertEqual(dict(zip(alttopo.boundary.transforms, alttopo.boundary.references)), dict(zip(topo.boundary.transforms, topo.boundary.references)))

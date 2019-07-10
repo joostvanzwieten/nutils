@@ -578,7 +578,7 @@ class _ExpressionParser:
     return self._tokens[self._index+2] if self._next.type == 'whitespace' else self._next
 
   def _asarray(self, ast, indices_token, shape):
-    indices = indices_token.data if indices_token else ''
+    indices = indices_token.data if isinstance(indices_token, _Token) else (indices_token or '')
     if len(indices) != len(shape):
       raise _IntermediateError('Expected {}, got {}.'.format(_sp(len(shape), 'index', 'indices'), len(indices)))
     linked_lengths = set()
@@ -696,12 +696,14 @@ class _ExpressionParser:
       indices = self._consume() if self._next.type == 'indices' else ''
       if target.type == 'geometry':
         geom = self._get_geometry(target.data)
+        if geom.shape == (1,) and not indices: # FIXME: temporary
+          indices = '0'
       elif target.type == 'argument':
         assert target.data.startswith('?')
         arg = self._get_arg(target.data[1:], indices)
       func = self.parse_var()
       if target.type == 'geometry':
-        return func.grad(indices and indices.data, geom, 'grad')
+        return func.grad(indices.data if isinstance(indices, _Token) else indices, geom, 'grad')
       else:
         return func.derivative(arg)
     elif self._next.type == 'eye':
@@ -717,6 +719,8 @@ class _ExpressionParser:
         geometry_name = self.default_geometry_name
       geom = self._get_geometry(geometry_name)
       indices = self._consume() if self._next.type == 'indices' else ''
+      if geom.shape == (1,) and not indices: # FIXME: temporary
+        indices = '0'
       value = self._asarray(('normal', _(geom)), indices, geom.shape)
     elif self._next.type == 'variable':
       token = self._consume()
@@ -963,11 +967,12 @@ class _ExpressionParser:
           tokens.append(_Token('indices', m.group(2)[1:], pos+m.start(2)+1))
         pos += m.end()
         continue
-      m = re.match(r'({}):([a-zA-Zα-ωΑ-Ω][a-zA-Zα-ωΑ-Ω0-9]*)_([a-zA-Z0-9])'.format('|'.join(map(re.escape, self.normal_symbols))), self.expression[pos:])
+      m = re.match(r'({}):([a-zA-Zα-ωΑ-Ω][a-zA-Zα-ωΑ-Ω0-9]*)(_[a-zA-Z0-9])?'.format('|'.join(map(re.escape, self.normal_symbols))), self.expression[pos:])
       if m:
         tokens.append(_Token('normal', m.group(1), pos))
         tokens.append(_Token('geometry', m.group(2), pos+m.start(2)))
-        tokens.append(_Token('indices', m.group(3), pos+m.start(3)))
+        if m.group(3):
+          tokens.append(_Token('indices', m.group(3)[1:], pos+m.start(3)+1))
         pos += m.end()
         continue
       m_variable = re.match(r'[?]?[a-zA-Zα-ωΑ-Ω][a-zA-Zα-ωΑ-Ω0-9]*', self.expression[pos:])

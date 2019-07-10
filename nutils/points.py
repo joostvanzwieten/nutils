@@ -55,12 +55,23 @@ class Points(types.Singleton):
     Number of spatial dimensions.
   '''
 
-  __cache__ = 'hull', 'onhull'
+  __cache__ = 'hull', 'onhull', 'basis', 'tensordims'
 
   @types.apply_annotations
-  def __init__(self, npoints:types.strictint, ndims:types.strictint):
+  def __init__(self, npoints:types.strictint, ndims:types.strictint, ndimsnormal:types.strictint=0):
     self.npoints = npoints
     self.ndims = ndims
+    assert 0 <= ndimsnormal <= ndims
+    self.ndimsnormal = ndimsnormal
+    self.ndimsmanifold = ndims-ndimsnormal
+
+  def __getitem__(self, item):
+    if not isinstance(item, slice):
+      raise ValueError
+    elif item.start in (None, 0) and item.stop in (None, self.ndims) and item.step in (None, 1):
+      return self
+    else:
+      raise ValueError('invalid slice')
 
   @property
   def tri(self):
@@ -70,7 +81,7 @@ class Points(types.Singleton):
     row defines a simplex by mapping vertices into the list of points.
     '''
 
-    if self.ndims == 0 and self.npoints == 1:
+    if self.npoints == 1:# self.ndims == 0 and self.npoints == 1:
       return types.frozenarray([[0]])
     raise Exception('tri not defined for {}'.format(self))
 
@@ -101,23 +112,34 @@ class Points(types.Singleton):
     onhull[numpy.ravel(self.hull)] = True # not clear why ravel is necessary but setitem seems to require it
     return types.frozenarray(onhull, copy=False)
 
+  @property
+  def basis(self):
+    if self.ndimsnormal == 0:
+      return types.frozenarray(numpy.eye(self.ndims)[None], dtype=float, copy=False)
+    else:
+      raise NotImplementedError
+
+  @property
+  def tensordims(self):
+    return self.ndims,
+
 strictpoints = types.strict[Points]
 
 class CoordsPoints(Points):
   '''Manually supplied points.'''
 
   @types.apply_annotations
-  def __init__(self, coords:types.frozenarray[float]):
+  def __init__(self, coords:types.frozenarray[float], ndimsnormal:types.strictint=0):
     self.coords = coords
-    super().__init__(*coords.shape)
+    super().__init__(*coords.shape, ndimsnormal)
 
 class CoordsWeightsPoints(CoordsPoints):
   '''Manually supplied points and weights.'''
 
   @types.apply_annotations
-  def __init__(self, coords:types.frozenarray[float], weights:types.frozenarray[float]):
+  def __init__(self, coords:types.frozenarray[float], weights:types.frozenarray[float], ndimsnormal:types.strictint=0):
     self.weights = weights
-    super().__init__(coords)
+    super().__init__(coords, ndimsnormal)
 
 class CoordsUniformPoints(CoordsPoints):
   '''Manually supplied points with uniform weights.'''
@@ -130,13 +152,26 @@ class CoordsUniformPoints(CoordsPoints):
 class TensorPoints(Points):
   '''Tensor product of two Points instances.'''
 
-  __cache__ = 'coords', 'weights', 'tri', 'hull'
+  __cache__ = 'coords', 'weights', 'tri', 'hull', 'tensordims'
 
   @types.apply_annotations
   def __init__(self, points1:strictpoints, points2:strictpoints):
     self.points1 = points1
     self.points2 = points2
-    super().__init__(points1.npoints * points2.npoints, points1.ndims + points2.ndims)
+    super().__init__(points1.npoints * points2.npoints, points1.ndims + points2.ndims, points1.ndimsnormal + points2.ndimsnormal)
+
+  def __getitem__(self, item):
+    if not isinstance(item, slice):
+      raise ValueError
+    r = range(self.ndims)[item]
+    if r.step != 1:
+      raise ValueError
+    if r.stop <= self.points1.ndims:
+      return self.points1[r.start:r.stop]
+    elif r.start >= self.points1.ndims:
+      return self.points2[r.start-self.points1.ndims:r.stop-self.points1.ndims]
+    else:
+      return TensorPoints(self.points1[r.start:], self.points2[:r.stop-self.points1.ndims])
 
   @property
   def coords(self):
@@ -174,6 +209,10 @@ class TensorPoints(Points):
       hull = numpy.concatenate([hull1.reshape(-1, self.ndims), numeric.overlapping(hull2.reshape(-1, 2*(self.ndims-1)), n=self.ndims).reshape(-1, self.ndims)])
       return types.frozenarray(hull, copy=False)
     return super().hull
+
+  @property
+  def tensordims(self):
+    return self.points1.tensordims + self.points2.tensordims
 
 class SimplexGaussPoints(CoordsWeightsPoints):
   '''Gauss quadrature points on a simplex.'''
@@ -228,13 +267,14 @@ class SimplexBezierPoints(CoordsPoints):
 class TransformPoints(Points):
   '''Affinely transformed Points.'''
 
-  __cache__ = 'coords', 'weights'
+  __cache__ = 'coords', 'weights', 'basis'
 
   @types.apply_annotations
   def __init__(self, points:strictpoints, trans:transform.stricttransformitem):
     self.points = points
     self.trans = trans
-    super().__init__(points.npoints, points.ndims)
+    assert trans.fromdims == points.ndims
+    super().__init__(points.npoints, trans.todims, trans.todims-points.ndimsmanifold)
 
   @property
   def coords(self):
@@ -242,7 +282,14 @@ class TransformPoints(Points):
 
   @property
   def weights(self):
-    return self.points.weights * abs(float(self.trans.det))
+    if self.points.ndimsmanifold < self.points.ndims:
+      P = numpy.array(self.points.basis[:,:,:self.points.ndimsmanifold])
+      numeric.gramschmidt(P)
+      TP = numpy.einsum('ij,njk->nik', self.trans.linear, P)
+      det = numpy.sqrt(numeric.det_exact(numpy.einsum('nki,nkj->nij', TP, TP)))
+    else:
+      det = abs(float(self.trans.det))
+    return self.points.weights * det
 
   @property
   def tri(self):
@@ -252,6 +299,14 @@ class TransformPoints(Points):
   def hull(self):
     return self.points.hull
 
+  @property
+  def basis(self):
+    b = numpy.einsum('ij,njk->nik', self.trans.linear, self.points.basis)
+    if b.shape[1] == b.shape[2]+1:
+      b = numpy.concatenate([b, self.trans.ext[numpy.newaxis,:,numpy.newaxis]], axis=2)
+    assert b.shape == (self.points.basis.shape[0], self.ndims, self.ndims)
+    return types.frozenarray(b, dtype=float, copy=False)
+
 class ConcatPoints(Points):
   '''Concatenation of several Points objects.
 
@@ -259,13 +314,14 @@ class ConcatPoints(Points):
   triggering deduplication and resulting in a smaller total point count.
   '''
 
-  __cache__ = 'coords', 'weights', 'tri', 'masks'
+  __cache__ = 'coords', 'weights', 'tri', 'masks', 'basis'
 
   @types.apply_annotations
   def __init__(self, allpoints:types.tuple[strictpoints], duplicates:frozenset=frozenset()):
     self.allpoints = allpoints
     self.duplicates = duplicates
-    super().__init__(sum(points.npoints for points in allpoints) - sum(len(d)-1 for d in duplicates), allpoints[0].ndims)
+    ndimsnormal, = set(p.ndimsnormal for p in allpoints)
+    super().__init__(sum(points.npoints for points in allpoints) - sum(len(d)-1 for d in duplicates), allpoints[0].ndims, ndimsnormal)
 
   @property
   def masks(self):
@@ -306,6 +362,10 @@ class ConcatPoints(Points):
       for i, j in pairs[1:]:
         renumber[i][j] = renumber[I][J]
     return types.frozenarray(numpy.concatenate([renum.take(points.tri) for renum, points in zip(renumber, self.allpoints)]), copy=False)
+
+  @property
+  def basis(self):
+    return types.frozenarray(numpy.concatenate([numpy.broadcast_to(points.basis, [points.npoints,self.ndims,self.ndims])[mask] for mask, points in zip(self.masks, self.allpoints)] if self.duplicates else [numpy.broadcast_to(points.basis, [points.npoints,self.ndims,self.ndims]) for points in self.allpoints]), copy=False)
 
 class ConePoints(Points):
   '''Affinely transformed lower-dimensional points plus tip.

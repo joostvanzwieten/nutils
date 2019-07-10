@@ -26,11 +26,10 @@ class basis(basisTest):
 
   def setUp(self):
     super().setUp()
-    self.domain, self.geom = mesh.rectilinear([max(1, self.nelems-n) for n in range(self.ndims)], periodic=[0] if self.periodic else [])
+    self.domain, self.geom = (mesh.newrectilinear if self.tensorial else mesh.rectilinear)([max(1, self.nelems-n) for n in range(self.ndims)], periodic=[0] if self.periodic else [])
     for iref in range(self.nrefine):
       self.domain = self.domain.refined_by([len(self.domain)-1])
-    if self.boundary:
-      self.skipTest('bases on boundaries of non-tensorial topologies are (temporarily) not supported')
+    if self.boundary and not self.tensorial:
       self.domain = self.domain.boundary[self.boundary]
     self.basis = self.domain.basis(self.btype, degree=self.degree)
     self.gauss = 'gauss{}'.format(2*self.degree)
@@ -55,7 +54,8 @@ for ndims in range(1, 4):
         for boundary in [None, 'bottom'] if ndims > 1 else [None]:
           for periodic in False, True:
             for nelems in range(1, 4):
-              basis(btype=btype, degree=degree, ndims=ndims, nrefine=nrefine, boundary=boundary, periodic=periodic, nelems=nelems)
+              for tensorial in [True] if boundary else [False, True]:
+                basis(btype=btype, degree=degree, ndims=ndims, nrefine=nrefine, boundary=boundary, periodic=periodic, nelems=nelems, tensorial=tensorial)
 
 class NNZ(matrix.Backend):
   def assemble(self, data, index, shape):
@@ -97,11 +97,10 @@ class structured(basisTest):
     if not self.product:
       self.domain, self.geom = mesh.rectilinear([2,3])
     else:
-      self.skipTest('in between bifurcate and tensorial')
-      domain1, geom1 = mesh.rectilinear([2])
-      domain2, geom2 = mesh.rectilinear([3])
+      domain1, geom1 = mesh.newrectilinear([2], name='x')
+      domain2, geom2 = mesh.newrectilinear([3], name='y')
       self.domain = domain1 * domain2
-      self.geom = function.concatenate(function.bifurcate(geom1, geom2), axis=0)
+      self.geom = function.concatenate([geom1, geom2], axis=0)
 
   def test_std_equalorder(self):
     for p in range(1, 3):
@@ -251,17 +250,17 @@ class unstructured_topology(TestCase):
       nverts = 25
     elif self.variant == 'tensor':
       structured, geom = mesh.rectilinear([numpy.linspace(0, 1, 5-i) for i in range(self.ndims)])
-      domain = topology.ConnectedTopology(structured.references, structured.transforms, structured.opposites, structured.connectivity)
+      domain = topology.ConnectedTopology(structured.roots, structured.references, structured.transforms, structured.opposites, structured.connectivity)
       nverts = numpy.product([5-i for i in range(self.ndims)])
     elif self.variant == 'simplex':
       numpy.random.seed(0)
       nverts = 20
       simplices = numeric.overlapping(numpy.arange(nverts), n=self.ndims+1)
       coords = numpy.random.normal(size=(nverts, self.ndims))
-      root = transform.Identifier(self.ndims, 'test')
-      transforms = transformseq.PlainTransforms([(root, transform.Square((c[1:]-c[0]).T, c[0])) for c in coords[simplices]], self.ndims)
-      domain = topology.SimplexTopology(simplices, transforms, transforms)
-      geom = function.rootcoords(self.ndims)
+      root = function.Root('test', self.ndims)
+      transforms = transformseq.PlainTransforms([(transform.Square((c[1:]-c[0]).T, c[0]),) for c in coords[simplices]], self.ndims, self.ndims)
+      domain = topology.SimplexTopology(simplices, (root,), transforms, transforms)
+      geom = function.rootcoords(domain.roots)
     else:
       raise NotImplementedError
     self.domain = domain
@@ -298,7 +297,7 @@ class unstructured_topology(TestCase):
 
   def test_poly(self):
     target = self.geom.sum(-1) if self.btype == 'bubble' \
-        else (self.geom**self.degree).sum(-1) + function.TransformsIndexWithTail(self.domain.transforms, function.TRANS).index if self.btype == 'discont' \
+        else (self.geom**self.degree).sum(-1) + transformseq.index_with_tail(self.domain.transforms, self.domain.roots)[0] if self.btype == 'discont' \
         else (self.geom**self.degree).sum(-1)
     projection = self.domain.projection(target, onto=self.basis, geometry=self.geom, ischeme='gauss', degree=2*self.degree, droptol=0)
     error2 = self.domain.integrate((target-projection)**2*function.J(self.geom), ischeme='gauss', degree=2*self.degree)

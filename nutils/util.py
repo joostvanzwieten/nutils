@@ -30,11 +30,13 @@ supports_outdirfd = os.open in os.supports_dir_fd and os.listdir in os.supports_
 sum = functools.partial(functools.reduce, operator.add)
 product = functools.partial(functools.reduce, operator.mul)
 
-def cumsum(seq):
+def cumsum(seq, *, include_end=False):
   offset = 0
   for i in seq:
     yield offset
     offset += i
+  if include_end:
+    yield offset
 
 def gather(items):
   gathered = []
@@ -47,6 +49,13 @@ def gather(items):
       gathered.append((key, values))
     values.append(value)
   return gathered
+
+def unique(seq):
+  items = []
+  for item in seq:
+    if item not in items:
+      items.append(item)
+  return items
 
 def pairwise(items, *, periodic=False):
   items = iter(items)

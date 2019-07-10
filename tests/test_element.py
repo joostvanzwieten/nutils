@@ -40,8 +40,9 @@ class elem(TestCase):
         self.assertNotEqual(swapped_up, None)
         ctrans_, etrans_ = swapped_up
         self.assertEqual(etrans * ctrans, ctrans_ * etrans_)
-        swapped_down = etrans_.swapdown(ctrans_)
-        self.assertEqual(swapped_down, (etrans, ctrans))
+        if not isinstance(etrans, transform.Manifold):
+          swapped_down = etrans_.swapdown(ctrans_)
+          self.assertEqual(swapped_down, (etrans, ctrans))
 
   @parametrize.enable_if(lambda ref, **kwargs: ref.ndims >= 2)
   def test_ribbons(self):

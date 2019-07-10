@@ -1260,6 +1260,10 @@ class frozenarray(collections.abc.Sequence, metaclass=_frozenarraymeta):
   __rand__ = lambda self, other: self.__base.__rand__(other)
   __xor__ = lambda self, other: self.__base.__xor__(other)
   __rxor__ = lambda self, other: self.__base.__rxor__(other)
+  __mod__ = lambda self, other: self.__base.__mod__(other)
+  __rmod__ = lambda self, other: self.__base.__rmod__(other)
+  __divmod__ = lambda self, other: self.__base.__divmod__(other)
+  __rdivmod__ = lambda self, other: self.__base.__rdivmod__(other)
 
   tolist = lambda self, *args, **kwargs: self.__base.tolist(*args, **kwargs)
   copy = lambda self, *args, **kwargs: self.__base.copy(*args, **kwargs)

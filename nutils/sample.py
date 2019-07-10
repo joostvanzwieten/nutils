@@ -53,6 +53,8 @@ def argdict(arguments):
     arguments = arguments['arguments']
   return types.frozendict[types.strictstr,types.frozenarray](arguments)
 
+TensorInfo = collections.namedtuple('TensorInfo', ['roots', 'ndims', 'ndimsmanifold', 'ndimsnormal'])
+
 class Sample(types.Singleton):
   '''Collection of points on a topology.
 
@@ -82,28 +84,89 @@ class Sample(types.Singleton):
       points show up in the evaluation.
   '''
 
-  __cache__ = 'allcoords'
+  __cache__ = 'allcoords', '_tensorial'
 
   @types.apply_annotations
-  def __init__(self, transforms:types.tuple[transformseq.stricttransforms], points:types.tuple[points.strictpoints], index:types.tuple[types.frozenarray[types.strictint]]):
+  def __init__(self, roots:types.tuple[function.strictroot], transforms:types.tuple[transformseq.stricttransforms], points:types.tuple[points.strictpoints], index:types.tuple[types.frozenarray[types.strictint]], ndims:types.strictint):
     assert len(points) == len(index)
     assert len(transforms) >= 1
     assert all(len(t) == len(points) for t in transforms)
+    todims = tuple(root.ndims for root in roots)
+    assert all(t.todims == todims for t in transforms)
     self.nelems = len(transforms[0])
     self.transforms = transforms
     self.points = points
     self.index = index
     self.npoints = sum(p.npoints for p in points)
-    self.ndims = transforms[0].fromdims
+    self.ndims = ndims # TODO: this is the ndims of the manifold, rename?
+    self.roots = roots
 
   def __repr__(self):
     return '{}<{}D, {} elems, {} points>'.format(type(self).__qualname__, self.ndims, self.nelems, self.npoints)
 
+  @property
+  def _tensorial(self):
+    # Find the partition of `self.roots` with smallest parts such that the
+    # partition has a tensorial points structure. The boolean array `m` marks
+    # the edges of tensor groups in `self.roots`. `m` is obtained by taking the
+    # intersection of all intersections of the tensorial structures of the
+    # transforms and the points.
+    m = numpy.ones(len(self.roots)+1, dtype=bool)
+    tf0 = numpy.cumsum([0]+[t[-1].fromdims for t in self.transforms[0][0]])
+    points0 = self.points[0]
+    for trans, points in zip(self.transforms[0], self.points):
+      tf = numpy.cumsum([0]+[t[-1].fromdims for t in trans])
+      pd = numpy.cumsum((0,)+points.tensordims)
+      m &= numpy.in1d(tf, pd)
+      a = numpy.cumsum([0]+[points[l:r].ndimsmanifold if l<r else 0 for l, r in util.pairwise(tf[m.nonzero()])])
+      b = numpy.cumsum([0]+[points0[l:r].ndimsmanifold if l<r else 0 for l, r in util.pairwise(tf0[m.nonzero()])])
+      m[m.nonzero()] &= a == b
+    assert m[0] and m[-1]
+    # Determine per part the dimension of the ambient, manifold and normal
+    # spaces.  We use the first element, but any would do.
+    tensorial = []
+    rpoints = 0
+    for lroots, rroots in util.pairwise(numpy.nonzero(m)[0]):
+      roots = self.roots[lroots:rroots]
+      transforms = self.transforms[0][0][lroots:rroots]
+      lpoints = rpoints
+      rpoints += sum(t[-1].fromdims if t else root.ndims for t, root in zip(transforms, roots))
+      ndims = sum(root.ndims for root in roots)
+      ndimsmanifold = self.points[0][lpoints:rpoints].ndimsmanifold if lpoints < rpoints else 0
+      tensorial.append(TensorInfo(roots=roots, ndims=ndims, ndimsmanifold=ndimsmanifold, ndimsnormal=ndims-ndimsmanifold))
+    return tuple(tensorial)
+
   def _prepare_funcs(self, funcs):
-    kwargs = dict(ndims=self.ndims)
+    kwargs = dict(ndims=self.ndims, roots=self.roots, tensorial=self._tensorial)
     if len(self.transforms) == 2:
       kwargs['opposite'] = False
     return [function.asarray(func).prepare_eval(**kwargs) for func in funcs]
+
+  def _common_eval(self, ielem):
+    points = self.points[ielem]
+    transforms = tuple(t[ielem] for t in self.transforms)
+
+    weights = getattr(points, 'weights', None)
+    if weights is not None:
+      detJ = 1
+      fr = 0
+      for group in self._tensorial:
+        J = numeric.blockdiag([transform.linear(transforms[0][self.roots.index(root)], root.ndims) for root in group.roots])
+        fl, fr = fr, fr+J.shape[1]
+        if group.ndimsmanifold == 0:
+          pass
+        elif group.ndimsmanifold == group.ndims:
+          detJ *= abs(float(numeric.det_exact(J)))
+        elif J.shape[1] == group.ndimsmanifold:
+          detJ *= numpy.sqrt(numeric.det_exact(numpy.einsum('ki,kj->ij', J, J)))
+        else:
+          P = numpy.array(points[fl:fr].basis[:,:,:group.ndimsmanifold])
+          numeric.gramschmidt(P)
+          J = numpy.einsum('ij,njk->nik', J, P[:,fl:fr])
+          detJ *= numpy.sqrt(numeric.det_exact(numpy.einsum('nki,nkj->nij', J, J)))
+      weights *= detJ
+
+    return weights, dict(_transforms=transforms, _points=points)
 
   @util.positional_only
   @util.single_or_multiple
@@ -119,12 +182,15 @@ class Sample(types.Singleton):
         Optional arguments for function evaluation.
     '''
 
+    if self.nelems == 0:
+      return [matrix.assemble(numpy.zeros((0,)), numpy.zeros((func.ndim,0), int), shape=func.shape) for func in funcs]
+
     # Functions may consist of several blocks, such as originating from
     # chaining. Here we make a list of all blocks consisting of triplets of
     # argument id, evaluable index, and evaluable values.
 
     funcs = self._prepare_funcs(funcs)
-    blocks = [(ifunc, function.Tuple(ind), f.simplified.optimized_for_numpy) for ifunc, func in enumerate(funcs) for ind, f in function.blocks(func)]
+    blocks = [(ifunc, function.Tuple(ind).simplified.optimized_for_numpy, f.simplified.optimized_for_numpy) for ifunc, func in enumerate(funcs) for ind, f in function.blocks(func)]
     block2func, indices, values = zip(*blocks) if blocks else ([],[],[])
 
     log.debug('integrating {} distinct blocks'.format('+'.join(
@@ -167,17 +233,11 @@ class Sample(types.Singleton):
     valueindexfunc = function.Tuple(function.Tuple([value]+list(index)) for value, index in zip(values, indices))
     with parallel.ctxrange('integrating', self.nelems) as ielems:
       for ielem in ielems:
-        points = self.points[ielem]
-        transforms = tuple(t[ielem] for t in self.transforms)
-        if self.ndims == 0 or len(transforms[0]) == 1:
-          detJ = 1
-        else:
-          J = transform.linear(transforms[0][1:], self.ndims)
-          detJ = abs(numpy.linalg.det(numpy.dot(J.T, J)))**0.5
-        for iblock, (intdata, *indices) in enumerate(valueindexfunc.eval(_transforms=transforms, _points=points.coords, **arguments)):
+        weights, evalargs = self._common_eval(ielem)
+        for iblock, (intdata, *indices) in enumerate(valueindexfunc.eval(**evalargs, **arguments)):
           s = slice(*offsets[iblock,ielem:ielem+2])
           data, index = data_index[block2func[iblock]]
-          w_intdata = detJ * numeric.dot(points.weights, intdata)
+          w_intdata = numeric.dot(weights, intdata)
           data[s] = w_intdata.ravel()
           si = (slice(None),) + (numpy.newaxis,) * (w_intdata.ndim-1)
           for idim, (ii,) in enumerate(indices):
@@ -212,16 +272,20 @@ class Sample(types.Singleton):
         Optional arguments for function evaluation.
     '''
 
+    if self.nelems == 0:
+      return [numpy.zeros((self.npoints,)+func.shape, dtype=func.dtype) for func in funcs]
+
     funcs = self._prepare_funcs(funcs)
     retvals = [parallel.shzeros((self.npoints,)+func.shape, dtype=func.dtype) for func in funcs]
-    idata = function.Tuple(function.Tuple([ifunc, function.Tuple(ind), f.simplified.optimized_for_numpy]) for ifunc, func in enumerate(funcs) for ind, f in function.blocks(func))
+    idata = function.Tuple(function.Tuple([ifunc, function.Tuple(ind).simplified.optimized_for_numpy, f.simplified.optimized_for_numpy]) for ifunc, func in enumerate(funcs) for ind, f in function.blocks(func))
 
     if graphviz:
       idata.graphviz(graphviz)
 
     with parallel.ctxrange('evaluating', self.nelems) as ielems:
       for ielem in ielems:
-        for ifunc, inds, data in idata.eval(_transforms=tuple(t[ielem] for t in self.transforms), _points=self.points[ielem].coords, **arguments):
+        weights, evalargs = self._common_eval(ielem)
+        for ifunc, inds, data in idata.eval(**evalargs, **arguments):
           numpy.add.at(retvals[ifunc], numpy.ix_(self.index[ielem], *[ind for (ind,) in inds]), data)
 
     return retvals
@@ -237,9 +301,9 @@ class Sample(types.Singleton):
     '''Basis-like function that for every point in the sample evaluates to the
     unit vector corresponding to its index.'''
 
-    index, head, tail = function.TransformsIndexWithTail(self.transforms[0], function.TRANS)
+    index, coords = transformseq.index_coords(self.transforms[0], self.roots)
     I = function.Elemwise(self.index, index, dtype=int)
-    B = function.Sampled(function.ApplyTransforms(head, tail), expect=function.take(self.allcoords, I, axis=0))
+    B = function.Sampled(coords, expect=function.take(self.allcoords, I, axis=0))
     return function.Inflate(func=B, dofmap=I, length=self.npoints, axis=0)
 
   def asfunction(self, array):
@@ -310,7 +374,7 @@ class Sample(types.Singleton):
     transforms = tuple(transform[selection] for transform in self.transforms)
     points = [self.points[ielem] for ielem in selection]
     offset = numpy.cumsum([0] + [p.npoints for p in points])
-    return Sample(transforms, points, map(numpy.arange, offset[:-1], offset[1:]))
+    return Sample(self.roots, transforms, points, map(numpy.arange, offset[:-1], offset[1:]), self.ndims)
 
 strictsample = types.strict[Sample]
 
@@ -343,9 +407,9 @@ class Integral(types.Singleton):
   __cache__ = 'derivative'
 
   @types.apply_annotations
-  def __init__(self, integrands:types.frozendict[strictsample, function.simplified], shape:types.tuple[int]):
+  def __init__(self, integrands:types.frozendict[strictsample, function.asarray], shape:types.tuple[int]):
     assert all(ig.shape == shape for ig in integrands.values()), 'incompatible shapes: expected {}, got {}'.format(shape, ', '.join({str(ig.shape) for ig in integrands.values()}))
-    self._integrands = integrands
+    self._integrands = {s: s._prepare_funcs([f])[0].simplified for s, f in integrands.items()}
     self.shape = shape
 
   def __repr__(self):
@@ -457,7 +521,7 @@ class Integral(types.Singleton):
   def _argshape(self, name):
     assert isinstance(name, str)
     shapes = {func.shape[:func.ndim-func._nderiv]
-      for func in function.Tuple(self._integrands.values()).dependencies
+      for func in function.Tuple(self._integrands.values()).simplified.dependencies
         if isinstance(func, function.Argument) and func._name == name}
     if not shapes:
       raise KeyError(name)

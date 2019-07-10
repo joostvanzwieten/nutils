@@ -1,6 +1,7 @@
 import itertools, pickle, warnings as _builtin_warnings
 from nutils import *
 from nutils.testing import *
+import nutils.points
 
 
 @parametrize
@@ -9,6 +10,7 @@ class check(TestCase):
   def setUp(self):
     super().setUp()
     domain, param = mesh.rectilinear([1]*self.ndim, periodic=[0])
+    self.roots = domain.roots
     if self.ndim == 1:
       self.geom = param**2
       poly = numpy.array([[1,-2,1],[0,2,-2],[0,0,1]]) # 2nd order bernstein
@@ -19,7 +21,7 @@ class check(TestCase):
     else:
       raise Exception('invalid ndim {!r}'.format(self.ndim))
     numpy.random.seed(0)
-    self.args = [function.Polyval(numeric.dot(numpy.random.uniform(size=shape+poly.shape[:1], low=self.low, high=self.high), poly), function.rootcoords(self.ndim)) for shape in self.shapes]
+    self.args = [function.Polyval(numeric.dot(numpy.random.uniform(size=shape+poly.shape[:1], low=self.low, high=self.high), poly), function.rootcoords(self.roots)) for shape in self.shapes]
     if self.pass_geom:
         self.args += [self.geom]
     self.sample = domain.sample('uniform', 2)
@@ -46,8 +48,8 @@ class check(TestCase):
         self.fail('arrays are not equal.\nACTUAL : {}\nDESIRED: {}'.format(decimal, *(numpy.array2string(a, prefix='ACTUAL : ') for a in (actual, desired))))
 
   def assertFunctionAlmostEqual(self, actual, desired, decimal):
-    evalargs = dict(_transforms=[trans[0] for trans in self.sample.transforms], _points=self.sample.points[0].coords)
-    actual = actual.prepare_eval()
+    evalargs = dict(_transforms=[trans[0] for trans in self.sample.transforms], _points=self.sample.points[0])
+    actual = actual.prepare_eval(roots=self.roots)
     with self.subTest('vanilla'):
       self.assertArrayAlmostEqual(actual.eval(**evalargs), desired, decimal)
     with self.subTest('simplified'):
@@ -261,8 +263,9 @@ class check(TestCase):
   def find(self, target, xi0):
     elemtrans, = self.sample.transforms[0]
     ndim, = self.geom.shape
-    J = function.dot(function.rootgradient(self.geom, ndim)[:,:,_], transform.linear(elemtrans[1:], elemtrans[-1].fromdims)[_,:,:], 1)
-    Jinv = function.inverse(J).prepare_eval()
+    rootlinear = numeric.blockdiag([transform.linear(trans, root.ndims) for root, trans in zip(self.roots, elemtrans)])
+    J = function.dot(function.rootgradient(self.geom, self.roots)[:,:,_], rootlinear[_,:,:], 1)
+    Jinv = function.inverse(J).prepare_eval(roots=self.roots)
     countdown = 5
     iiter = 0
     self.assertEqual(target.shape[-1:], self.geom.shape)
@@ -273,10 +276,10 @@ class check(TestCase):
     target = target.reshape(-1, target.shape[-1])
     xi = xi0.reshape(-1, xi0.shape[-1])
     while countdown:
-      err = target - self.geom.prepare_eval().eval(_transforms=[elemtrans], _points=xi)
+      err = target - self.geom.prepare_eval(roots=self.roots).eval(_transforms=[elemtrans], _points=nutils.points.CoordsPoints(xi))
       if numpy.less(numpy.abs(err), 1e-12).all():
         countdown -= 1
-      dxi_root = (Jinv.eval(_transforms=[elemtrans], _points=xi) * err[...,_,:]).sum(-1)
+      dxi_root = (Jinv.eval(_transforms=[elemtrans], _points=nutils.points.CoordsPoints(xi)) * err[...,_,:]).sum(-1)
       #xi = xi + numpy.dot(dxi_root, self.elem.inv_root_transform.T)
       xi = xi + dxi_root
       iiter += 1
@@ -287,15 +290,15 @@ class check(TestCase):
   def test_rootgradient(self):
     elemtrans, = self.sample.transforms[0]
     points = self.sample.points[0].coords
-    argsfun = function.Tuple(self.args).prepare_eval()
-    exact = self.sample.eval(function.rootgradient(self.op_args, ndims=self.ndim))
+    argsfun = function.Tuple(self.args).prepare_eval(roots=self.roots)
+    exact = self.sample.eval(function.rootgradient(self.op_args, self.roots))
     D = numpy.array([-.5,.5])[:,_,_] * numpy.eye(self.ndim)
-    invlinear = numpy.linalg.inv(transform.linear(elemtrans[1:], elemtrans[-1].fromdims))
+    invlinear = numeric.blockdiag([numpy.linalg.inv(transform.linear(trans, root.ndims)) for root, trans in zip(self.roots, elemtrans)])
     good = False
     eps = 1e-5
     while not numpy.all(good):
       fdpoints = points[_,_,:,:] + D[:,:,_,:] * eps
-      tmp = self.n_op(*argsfun.eval(_transforms=[elemtrans], _points=fdpoints.reshape(-1,fdpoints.shape[-1])))
+      tmp = self.n_op(*argsfun.eval(_transforms=[elemtrans], _points=nutils.points.CoordsPoints(fdpoints.reshape(-1,fdpoints.shape[-1]))))
       if len(tmp) == 1 or tmp.dtype.kind in 'bi' or self.zerograd:
         error = exact
       else:
@@ -324,7 +327,7 @@ class check(TestCase):
   def test_gradient(self):
     elemtrans, = self.sample.transforms[0]
     points = self.sample.points[0].coords
-    argsfun = function.Tuple(self.args).prepare_eval()
+    argsfun = function.Tuple(self.args).prepare_eval(roots=self.roots)
     exact = self.sample.eval(self.op_args.grad(self.geom))
     fddeltas = numpy.array([1,2,3])
     fdfactors = numpy.linalg.solve(2*fddeltas**numpy.arange(1,1+2*len(fddeltas),2)[:,None], [1]+[0]*(len(fddeltas)-1))
@@ -334,7 +337,7 @@ class check(TestCase):
     eps = 1e-4
     while not numpy.all(good):
       fdpoints = self.find(self.sample.eval(self.geom)[_,_,:,:] + D[:,:,_,:] * eps, points[_,_,:,:])
-      tmp = self.n_op(*argsfun.eval(_transforms=[elemtrans], _points=fdpoints.reshape(-1,fdpoints.shape[-1])))
+      tmp = self.n_op(*argsfun.eval(_transforms=[elemtrans], _points=nutils.points.CoordsPoints(fdpoints.reshape(-1,fdpoints.shape[-1]))))
       if len(tmp) == 1 or tmp.dtype.kind in 'bi' or self.zerograd:
         error = exact
       else:
@@ -350,7 +353,7 @@ class check(TestCase):
   def test_doublegradient(self):
     elemtrans, = self.sample.transforms[0]
     points = self.sample.points[0].coords
-    argsfun = function.Tuple(self.args).prepare_eval()
+    argsfun = function.Tuple(self.args).prepare_eval(roots=self.roots)
     exact = self.sample.eval(self.op_args.grad(self.geom).grad(self.geom))
     fddeltas = numpy.array([1,2,3])
     fdfactors = numpy.linalg.solve(2*fddeltas**numpy.arange(1,1+2*len(fddeltas),2)[:,None], [1]+[0]*(len(fddeltas)-1))
@@ -361,7 +364,7 @@ class check(TestCase):
     eps = 1e-4
     while not numpy.all(good):
       fdpoints = self.find(self.sample.eval(self.geom)[_,_,_,_,:,:] + DD[:,:,:,:,_,:] * eps, points[_,_,_,_,:,:])
-      tmp = self.n_op(*argsfun.eval(_transforms=[elemtrans], _points=fdpoints.reshape(-1,fdpoints.shape[-1])))
+      tmp = self.n_op(*argsfun.eval(_transforms=[elemtrans], _points=nutils.points.CoordsPoints(fdpoints.reshape(-1,fdpoints.shape[-1]))))
       if len(tmp) == 1 or tmp.dtype.kind in 'bi' or self.zerograd:
         error = exact
       else:
@@ -536,7 +539,7 @@ class elemwise(TestCase):
   def setUp(self):
     super().setUp()
     self.domain, geom = mesh.rectilinear([5])
-    self.index = function.TransformsIndexWithTail(self.domain.transforms, function.TRANS).index
+    self.index = transformseq.index_with_tail(self.domain.transforms, self.domain.roots)[0]
     self.data = tuple(map(types.frozenarray, (
       numpy.arange(1, dtype=float).reshape(1,1),
       numpy.arange(2, dtype=float).reshape(1,2),
@@ -549,18 +552,18 @@ class elemwise(TestCase):
   def test_evalf(self):
     for i, trans in enumerate(self.domain.transforms):
       with self.subTest(i=i):
-        numpy.testing.assert_array_almost_equal(self.func.prepare_eval().eval(_transforms=(trans,)), self.data[i][_])
+        numpy.testing.assert_array_almost_equal(self.func.prepare_eval(roots=self.domain.roots).eval(_transforms=(trans,)), self.data[i][_])
 
   def test_shape(self):
     for i, trans in enumerate(self.domain.transforms):
       with self.subTest(i=i):
-        self.assertEqual(self.func.size.prepare_eval().eval(_transforms=(trans,))[0], self.data[i].size)
+        self.assertEqual(self.func.size.prepare_eval(roots=self.domain.roots).eval(_transforms=(trans,))[0], self.data[i].size)
 
   def test_derivative(self):
-    self.assertTrue(function.iszero(function.rootgradient(self.func, self.domain.ndims)))
+    self.assertTrue(function.iszero(function.rootgradient(self.func, self.domain.roots)))
 
   def test_shape_derivative(self):
-    self.assertEqual(function.rootgradient(self.func, self.domain.ndims).shape, self.func.shape+(self.domain.ndims,))
+    self.assertEqual(function.rootgradient(self.func, self.domain.roots).shape, self.func.shape+(self.domain.ndims,))
 
 
 class namespace(TestCase):
@@ -836,7 +839,7 @@ class jacobian(TestCase):
 jacobian(delayed=True)
 jacobian(delayed=False)
 
-class basis(TestCase):
+class CommonBasis:
 
   @classmethod
   def setUpClass(cls):
@@ -966,111 +969,116 @@ class basis(TestCase):
     return result.tolist()
 
   def test_evalf(self):
-    ref = element.PointReference() if self.transforms.fromdims == 0 else element.LineReference()**self.transforms.fromdims
+    ref = element.PointReference() if sum(root.ndims for root in self.roots) == 0 else element.LineReference()**sum(root.ndims for root in self.roots)
     points = ref.getpoints('bezier', 4).coords
     with self.assertWarnsRegex(function.ExpensiveEvaluationWarning, 'using explicit basis evaluation.*'):
       for ielem in range(self.checknelems):
         self.assertEqual(self.basis.evalf([ielem], points).tolist(), self.checkeval(ielem, points))
 
   def test_simplified(self):
-    ref = element.PointReference() if self.transforms.fromdims == 0 else element.LineReference()**self.transforms.fromdims
-    points = ref.getpoints('bezier', 4).coords
+    ref = element.PointReference() if sum(root.ndims for root in self.roots) == 0 else element.LineReference()**sum(root.ndims for root in self.roots)
+    points = ref.getpoints('bezier', 4)
     simplified = self.basis.simplified
     with _builtin_warnings.catch_warnings():
       _builtin_warnings.simplefilter('ignore', category=function.ExpensiveEvaluationWarning)
       for ielem in range(self.checknelems):
-        value = simplified.prepare_eval().eval(_transforms=(self.transforms[ielem],), _points=points)
+        value = simplified.prepare_eval(roots=self.roots).eval(_transforms=(self.transforms[ielem],), _points=points)
         if value.shape[0] == 1:
-          value = numpy.tile(value, (points.shape[0], 1))
-        self.assertEqual(value.tolist(), self.checkeval(ielem, points))
+          value = numpy.tile(value, (points.npoints, 1))
+        self.assertEqual(value.tolist(), self.checkeval(ielem, points.coords))
 
-class PlainBasis(basis):
+class PlainBasis(CommonBasis, TestCase):
 
   @classmethod
   def setUpClass(cls):
-    cls.transforms = transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0)
-    index, points = function.transform_index_points(cls.transforms)
-    cls.basis = function.PlainBasis([[1],[2,3],[4,5],[6]], [[0],[2,3],[1,3],[2]], 4, index, points)
+    cls.roots = function.Root('x', 0),
+    cls.transforms = transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0, 0)
+    index, coords = transformseq.index_coords(cls.transforms, cls.roots)
+    cls.basis = function.PlainBasis([[1],[2,3],[4,5],[6]], [[0],[2,3],[1,3],[2]], 4, index, coords)
     cls.checkcoeffs = [[1],[2,3],[4,5],[6]]
     cls.checkdofs = [[0],[2,3],[1,3],[2]]
     cls.checkndofs = 4
     super().setUpClass()
 
-class DiscontBasis(basis):
+class DiscontBasis(CommonBasis, TestCase):
 
   @classmethod
   def setUpClass(cls):
-    cls.transforms = transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0)
-    index, points = function.transform_index_points(cls.transforms)
-    cls.basis = function.DiscontBasis([[1],[2,3],[4,5],[6]], index, points)
+    cls.roots = function.Root('x', 0),
+    cls.transforms = transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0, 0)
+    index, coords = transformseq.index_coords(cls.transforms, cls.roots)
+    cls.basis = function.DiscontBasis([[1],[2,3],[4,5],[6]], index, coords)
     cls.checkcoeffs = [[1],[2,3],[4,5],[6]]
     cls.checkdofs = [[0],[1,2],[3,4],[5]]
     cls.checkndofs = 6
     super().setUpClass()
 
-class MaskedBasis(basis):
+class MaskedBasis(CommonBasis, TestCase):
 
   @classmethod
   def setUpClass(cls):
-    cls.transforms = transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0)
-    index, points = function.transform_index_points(cls.transforms)
-    parent = function.PlainBasis([[1],[2,3],[4,5],[6]], [[0],[2,3],[1,3],[2]], 4, index, points)
-    cls.basis = function.MaskedBasis(parent, [0,2], index, points)
+    cls.roots = function.Root('x', 0),
+    cls.transforms = transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0, 0)
+    index, coords = transformseq.index_coords(cls.transforms, cls.roots)
+    parent = function.PlainBasis([[1],[2,3],[4,5],[6]], [[0],[2,3],[1,3],[2]], 4, index, coords)
+    cls.basis = function.MaskedBasis(parent, [0,2], index, coords)
     cls.checkcoeffs = [[1],[2],[],[6]]
     cls.checkdofs = [[0],[1],[],[1]]
     cls.checkndofs = 2
     super().setUpClass()
 
-class PrunedBasis(basis):
+class PrunedBasis(CommonBasis, TestCase):
 
   @classmethod
   def setUpClass(cls):
-    parent_transforms = transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0)
-    parent_index, parent_points = function.transform_index_points(parent_transforms)
-    parent = function.PlainBasis([[1],[2,3],[4,5],[6]], [[0],[2,3],[1,3],[2]], 4, parent_index, parent_points)
+    cls.roots = function.Root('x', 0),
+    parent_transforms = transformseq.PlainTransforms([(transform.Identifier(0,k),) for k in 'abcd'], 0, 0)
+    parent_index, parent_coords = transformseq.index_coords(parent_transforms, cls.roots)
+    parent = function.PlainBasis([[1],[2,3],[4,5],[6]], [[0],[2,3],[1,3],[2]], 4, parent_index, parent_coords)
     transmap = numpy.array([0,2])
     cls.transforms = parent_transforms[transmap]
-    index, points = function.transform_index_points(cls.transforms)
-    cls.basis = function.PrunedBasis(parent, transmap, index, points)
+    index, coords = transformseq.index_coords(cls.transforms, cls.roots)
+    cls.basis = function.PrunedBasis(parent, transmap, index, coords)
     cls.checkcoeffs = [[1],[4,5]]
     cls.checkdofs = [[0],[1,2]]
     cls.checkndofs = 3
     super().setUpClass()
 
-class StructuredBasis1D(basis):
+class StructuredBasis1D(CommonBasis, TestCase):
 
   @classmethod
   def setUpClass(cls):
-    cls.transforms = transformseq.StructuredTransforms(transform.Identifier(1, 'test'), [transformseq.DimAxis(0,4,False)], 0)
-    index, points = function.transform_index_points(cls.transforms)
-    cls.basis = function.StructuredBasis([[[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]]], [[0,1,2,3]], [[2,3,4,5]], [5], [4], index, points)
+    cls.roots = function.Root('x', 1),
+    cls.transforms = transformseq.StructuredTransforms(1, [transformseq.DimAxis(0,4,False)], 0)
+    index, coords = transformseq.index_coords(cls.transforms, cls.roots)
+    cls.basis = function.StructuredBasis([[[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]]], [[0,1,2,3]], [[2,3,4,5]], [5], [4], index, coords)
     cls.checkcoeffs = [[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]]
     cls.checkdofs = [[0,1],[1,2],[2,3],[3,4]]
     cls.checkndofs = 5
     super().setUpClass()
 
-class StructuredBasis1DPeriodic(basis):
+class StructuredBasis1DPeriodic(CommonBasis, TestCase):
 
   @classmethod
   def setUpClass(cls):
-    cls.transforms = transformseq.StructuredTransforms(transform.Identifier(1, 'test'), [transformseq.DimAxis(0,4,True)], 0)
-    index, points = function.transform_index_points(cls.transforms)
-    cls.basis = function.StructuredBasis([[[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]]], [[0,1,2,3]], [[2,3,4,5]], [4], [4], index, points)
+    cls.roots = function.Root('x', 1),
+    cls.transforms = transformseq.StructuredTransforms(1, [transformseq.DimAxis(0,4,True)], 0)
+    index, coords = transformseq.index_coords(cls.transforms, cls.roots)
+    cls.basis = function.StructuredBasis([[[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]]], [[0,1,2,3]], [[2,3,4,5]], [4], [4], index, coords)
     cls.checkcoeffs = [[[1],[2]],[[3],[4]],[[5],[6]],[[7],[8]]]
     cls.checkdofs = [[0,1],[1,2],[2,3],[3,0]]
     cls.checkndofs = 4
     super().setUpClass()
 
-class StructuredBasis2D(basis):
+class StructuredBasis2D(CommonBasis, TestCase):
 
   @classmethod
   def setUpClass(cls):
-    cls.transforms = transformseq.StructuredTransforms(transform.Identifier(2, 'test'), [transformseq.DimAxis(0,2,False),transformseq.DimAxis(0,2,False)], 0)
-    index, points = function.transform_index_points(cls.transforms)
-    cls.basis = function.StructuredBasis([[[[1],[2]],[[3],[4]]],[[[5],[6]],[[7],[8]]]], [[0,1],[0,1]], [[2,3],[2,3]], [3,3], [2,2], index, points)
+    cls.roots = function.Root('x', 2),
+    cls.transforms = transformseq.StructuredTransforms(2, [transformseq.DimAxis(0,2,False),transformseq.DimAxis(0,2,False)], 0)
+    index, coords = transformseq.index_coords(cls.transforms, cls.roots)
+    cls.basis = function.StructuredBasis([[[[1],[2]],[[3],[4]]],[[[5],[6]],[[7],[8]]]], [[0,1],[0,1]], [[2,3],[2,3]], [3,3], [2,2], index, coords)
     cls.checkcoeffs = [[[[5]],[[6]],[[10]],[[12]]],[[[7]],[[8]],[[14]],[[16]]],[[[15]],[[18]],[[20]],[[24]]],[[[21]],[[24]],[[28]],[[32]]]]
     cls.checkdofs = [[0,1,3,4],[1,2,4,5],[3,4,6,7],[4,5,7,8]]
     cls.checkndofs = 9
     super().setUpClass()
-
-del basis

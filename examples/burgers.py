@@ -27,7 +27,7 @@ def main(nelems:int, ndims:int, degree:int, timescale:float, newtontol:float, en
        Stopping time.
   '''
 
-  domain, geom = mesh.rectilinear([numpy.linspace(0,1,nelems+1)]*ndims, periodic=range(ndims))
+  domain, geom = mesh.newrectilinear([numpy.linspace(0,1,nelems+1)]*ndims, periodic=range(ndims))
 
   ns = function.Namespace()
   ns.x = geom
@@ -92,6 +92,7 @@ class test(testing.TestCase):
   @testing.requires('matplotlib')
   def test_2d_p1(self):
     lhs = main(ndims=2, nelems=4, timescale=.1, degree=1, endtime=.01, newtontol=1e-5)
+    lhs = lhs.reshape(4,2,4,2).transpose(0,2,1,3).ravel()
     self.assertAlmostEqual64(lhs, '''
       eNoNyKENhEAQRuGEQsCv2SEzyQZHDbRACdsDJNsBjqBxSBxBHIgJ9xsqQJ1Drro1L1/eYBZceGz8njrR
       yacm8UQLBvPYCw1airpyUVYSJLhKijK4IC01WDnqqxvX8OTl427aU73sctPGr3qqceBnRzOjo0xy9JpJ
