@@ -47,6 +47,7 @@ class check(TestCase):
 
   def assertFunctionAlmostEqual(self, actual, desired, decimal):
     evalargs = dict(_transforms=[trans[0] for trans in self.sample.transforms], _points=self.sample.points[0].coords)
+    actual = actual.prepare_eval()
     with self.subTest('vanilla'):
       self.assertArrayAlmostEqual(actual.eval(**evalargs), desired, decimal)
     with self.subTest('simplified'):
