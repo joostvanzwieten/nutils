@@ -334,7 +334,7 @@ class Topology(types.Singleton):
       n = n[0]
     return self if n <= 0 else self.refined.refine(n-1)
 
-  def trim(self, levelset, maxrefine, ndivisions=8, name='trimmed', leveltopo=None, *, arguments=None):
+  def _trim(self, levelset, maxrefine, ndivisions=8, leveltopo=None, *, arguments=None):
     'trim element along levelset'
 
     if arguments is None:
@@ -367,7 +367,18 @@ class Topology(types.Singleton):
             mask[indices] = False
           refs.append(ref.trim(levels, maxrefine=maxrefine, ndivisions=ndivisions))
       log.debug('cache', fcache.stats)
-    return SubsetTopology(self, refs, newboundary=name)
+    return refs
+
+  def trim(self, levelset, maxrefine, ndivisions=8, name='trimmed', leveltopo=None, *, arguments=None):
+     refs = self._trim(levelset, maxrefine, ndivisions, leveltopo, arguments=arguments)
+     return SubsetTopology(self, refs, newboundary=name)
+
+  @log.withcontext
+  @types.apply_annotations
+  def partition(self, levelset:function.asarray, maxrefine:types.strictint, posname:types.strictstr, negname:types.strictstr, *, ndivisions=8, arguments=None):
+    pos = self._trim(levelset, maxrefine=maxrefine, ndivisions=ndivisions, arguments=arguments)
+    refs = tuple((pref, bref-pref) for bref, pref in zip(self.references, pos))
+    return PartitionedTopology(self, refs, (posname, negname))
 
   def subset(self, topo, newboundary=None, strict=False):
     'intersection'
@@ -2040,6 +2051,214 @@ class WithIdentifierTopology(Topology):
 
   def getitem(self, item):
     return WithIdentifierTopology(self._parent.getitem(item), self._token)
+
+class PartitionedTopology(DisjointUnionTopology):
+
+  __slots__ = 'basetopo', 'refs', 'names', 'nparts', '_parts'
+  __cache__ = 'boundary', 'interfaces'
+
+  @types.apply_annotations
+  def __init__(self, basetopo:stricttopology, refs:types.tuple[types.tuple[element.strictreference]], names:types.tuple[types.strictstr]):
+    if len(refs) != len(basetopo):
+      raise ValueError('Expected {} refs tuples but got {}.'.format(len(basetopo), len(refs)))
+    self.nparts = len(refs[0]) if refs else len(names)
+    if not all(len(r) == self.nparts for r in refs):
+      raise ValueError('Variable number of parts.')
+    if len(names) != self.nparts:
+      raise ValueError('Expected {} names, one for every part, but got {}.'.format(self.nparts, len(names)))
+    if any(':' in name for name in names):
+      raise ValueError('Names may not contain colons.')
+    if self.nparts == 0:
+      raise ValueError('A partition consists of at least one part, but got zero.')
+    assert all(functools.reduce(operator.or_, prefs) == bref for bref, prefs in zip(basetopo.references, refs)), 'not a partition: union of parts is smaller then base'
+
+    self.basetopo = basetopo
+    self.refs = refs
+    self.names = names
+
+    indices = tuple(types.frozenarray(numpy.where(list(map(bool, prefs)))[0]) for prefs in zip(*refs))
+    self._parts = tuple(WithIdentifierTopology(SubsetTopology(basetopo, prefs), name) for name, prefs in zip(names, zip(*refs)))
+    super().__init__(self._parts, names)
+
+  def getitem(self, item):
+    if item in self.names:
+      return _SubsetOfPartitionedTopology(self, {item})
+    else:
+      topo = self.basetopo.getitem(item)
+      refs = tuple(tuple(ref & bref for ref in self.refs[self.basetopo.transforms.index(trans)]) for bref, trans in zip(topo.references, topo.transforms))
+      return PartitionedTopology(topo, refs, self.names)
+
+  @property
+  def boundary(self):
+    baseboundary = self.basetopo.boundary
+    brefs = []
+    for bref, btrans in zip(baseboundary.references, baseboundary.transforms):
+      ielem, etrans = self.basetopo.transforms.index_with_tail(btrans)
+      brefs.append(tuple(pref.get_from_trans(etrans) for pref in self.refs[ielem]))
+    return PartitionedTopology(baseboundary, brefs, self.names)
+
+  @property
+  def interfaces(self):
+    baseifaces = self.basetopo.interfaces
+    basereferences = {(a, b): [] for a in self.names for b in self.names}
+    baseindices = {(a, b): [] for a in self.names for b in self.names}
+    for ieelem, (eref, etrans, oppetrans) in enumerate(zip(baseifaces.references, baseifaces.transforms, baseifaces.opposites)):
+      ielem, tail = self.basetopo.transforms.index_with_tail(etrans)
+      ioppelem, opptail = self.basetopo.transforms.index_with_tail(oppetrans)
+      erefs = tuple(filter(lambda item: item[1], ((i, ref.get_from_trans(tail)) for i, ref in zip(self.names, self.refs[ielem]))))
+      opperefs = tuple(filter(lambda item: item[1], ((i, ref.get_from_trans(opptail)) for i, ref in zip(self.names, self.refs[ioppelem]))))
+      checkeref = eref.empty
+      for aname, aeref in erefs:
+        for bname, beref in opperefs:
+          parteref = aeref & beref
+          if parteref:
+            basereferences[aname, bname].append(parteref)
+            baseindices[aname, bname].append(ieelem)
+            checkeref |= parteref
+      assert checkeref == eref
+    baseindices = {p: types.frozenarray(i, dtype=int) for p, i in baseindices.items()}
+
+    newreferences = {(a, b): [] for i, a in enumerate(self.names) for b in self.names[i+1:]}
+    newtransforms = {(a, b): [] for i, a in enumerate(self.names) for b in self.names[i+1:]}
+    newopposites = {(a, b): [] for i, a in enumerate(self.names) for b in self.names[i+1:]}
+    for baseref, partrefs, basetrans in zip(self.basetopo.references, self.refs, self.basetopo.transforms):
+      pool = {}
+      for aname, aref in zip(self.names, partrefs):
+        if not aref:
+          continue
+        for aetrans, aeref in aref.edges[baseref.nedges:]:
+          if not aeref:
+            continue
+          points = types.frozenarray(aetrans.apply(aeref.getpoints('bezier', 2).coords))
+          bname, beref, betrans = pool.pop((points, not aetrans.isflipped), (None, None, None))
+          if beref is None:
+            pool[(points, aetrans.isflipped)] = aname, aeref, aetrans
+          else:
+            assert aname != bname, 'elements are not supposed to count internal interfaces as edges'
+            assert aeref == beref
+            atrans = basetrans + (aetrans, transform.Identifier(self.ndims-1, aname))
+            btrans = basetrans + (betrans, transform.Identifier(self.ndims-1, bname))
+            if self.names.index(aname) <= self.names.index(bname):
+              iface = aname, bname
+            else:
+              iface = bname, aname
+              atrans, btrans = btrans, atrans
+            newreferences[iface].append(aeref)
+            newtransforms[iface].append(atrans)
+            newopposites[iface].append(btrans)
+      assert not pool, 'some interal edges have no opposites'
+
+    itopos = []
+    inames = []
+    for i, a in enumerate(self.names):
+      itopos.append(Topology(elementseq.asreferences(basereferences[a, a], self.ndims-1),
+                             transformseq.WithIdentifierTransforms(baseifaces.transforms[baseindices[a, a]], a),
+                             transformseq.WithIdentifierTransforms(baseifaces.opposites[baseindices[a, a]], a)))
+      inames.append('{0}:{0}'.format(a))
+      for b in self.names[i+1:]:
+        base = Topology(elementseq.asreferences(basereferences[a, b] + basereferences[b, a], self.ndims-1),
+                        transformseq.WithIdentifierTransforms(transformseq.chain((baseifaces.transforms[baseindices[a, b]], baseifaces.opposites[baseindices[b, a]]), self.ndims-1), a),
+                        transformseq.WithIdentifierTransforms(transformseq.chain((baseifaces.opposites[baseindices[a, b]], baseifaces.transforms[baseindices[b, a]]), self.ndims-1), b))
+        new = Topology(elementseq.asreferences(newreferences[a, b], self.ndims-1),
+                       transformseq.PlainTransforms(newtransforms[a, b], self.ndims-1),
+                       transformseq.PlainTransforms(newopposites[a, b], self.ndims-1))
+        itopos.append(DisjointUnionTopology((base, new)))
+        inames.append('{}:{}'.format(a, b))
+    return DisjointUnionTopology(itopos, inames)
+
+  def __sub__(self, other):
+    if self == other:
+      return EmptyTopology(self.ndims)
+    elif isinstance(other, _SubsetOfPartitionedTopology) and other._partition == self:
+      remainder = frozenset(self.names) - frozenset(other._names)
+      if remainder:
+        return _SubsetOfPartitionedTopology(self, remainder)
+      else:
+        return EmptyTopology(self.ndims)
+    else:
+      return super().__sub__(other)
+
+class _SubsetOfPartitionedTopology(DisjointUnionTopology):
+
+  __slots__ = '_partition', '_names'
+  __cache__ = 'boundary', 'interfaces'
+
+  @types.apply_annotations
+  def __init__(self, partition: stricttopology, names: frozenset):
+    self._partition = partition
+    if not names <= frozenset(partition.names):
+      raise ValueError('Not a subset of the partition.')
+    if not all(isinstance(name, str) for name in names):
+      raise ValueError('All names should be str objects.')
+    self._names = tuple(sorted(names, key=partition.names.index))
+    super().__init__(tuple(self._partition._parts[self._partition.names.index(name)] for name in self._names), self._names)
+
+  def __getitem__(self, item):
+    if item in self._names:
+      return _SubsetOfPartitionedTopology(self._partition, {item})
+    elif item in self._partition.names:
+      return EmptyTopology(self.ndims)
+    else:
+      topo = self._partition.getitem(item)
+      assert not isinstance(topo, _SubsetOfPartitionedTopology) # this is covered by the above two conditionals
+      if isinstance(topo, EmptyTopology):
+        return topo
+      elif isinstance(topo, PartitionedTopology):
+        return _SubsetOfPartitionedTopology(topo, self._names)
+      else:
+        raise NotImplementedError
+
+  @property
+  def boundary(self):
+    # The boundary of this subset consists of the boundary of the base that
+    # touches this subset and the interfaces between all parts in this subset
+    # and all parts not in this subset. All interfaces are grouped and named by
+    # the parts not in this subset: given a partition A, B of Ω, then
+    # `Ω['A'].boundary['B']` is the same as `Ω.interfaces['A:B']` or
+    # `~Ω.interfaces['B:A']`, whichever exists.
+    topos = []
+    names = []
+    for b in self._partition.names: # parts not in this subset
+      if b in self._names:
+        continue
+      btopos = []
+      for a in self._names: # parts in this subset
+        if self._partition.names.index(a) <= self._partition.names.index(b):
+          btopos.append(self._partition.interfaces.getitem('{}:{}'.format(a, b)))
+        else:
+          btopos.append(~self._partition.interfaces.getitem('{}:{}'.format(b, a)))
+      topos.append(DisjointUnionTopology(btopos))
+      names.append(b)
+    for name in self._names:
+      topos.append(self._partition.boundary.getitem(name))
+    groups = {}
+    return DisjointUnionTopology(topos, names)
+
+  @property
+  def interfaces(self):
+    topos = []
+    names = []
+    for i, a in enumerate(self._names):
+      for b in self._names[i:]:
+        topos.append(self._partition.interfaces.getitem('{}:{}'.format(a, b)))
+        names.append('{}:{}'.format(a, b))
+    return DisjointUnionTopology(topos, names)
+
+  def __or__(self, other):
+    if isinstance(other, _SubsetOfPartitionedTopology) and other._partition == self._partition:
+      return _SubsetOfPartitionedTopology(self._partition, frozenset(self._names) | frozenset(other._names))
+    else:
+      return super().__or__(other)
+
+  def __rsub__(self, other):
+    if self._partition == other or self._partition.basetopo == other:
+      remainder = frozenset(self._partition.names) - frozenset(self._names)
+      if remainder:
+        return _SubsetOfPartitionedTopology(self._partition, remainder)
+      else:
+        return EmptyTopology(self.ndims)
+    else:
+      return super().__rsub__(other)
 
 class PatchBoundary(types.Singleton):
 

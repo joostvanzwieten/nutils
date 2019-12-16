@@ -86,6 +86,18 @@ class Reference(types.Singleton):
   def children(self):
     return list(zip(self.child_transforms, self.child_refs))
 
+  def get_from_trans(self, trans):
+    if not trans:
+      return self
+    if trans[0].todims != self.ndims:
+      raise ValueError('Expected a transform chain that maps to {} dims but got {}.'.format(self.ndims, trans[0].todims))
+    if trans[0].fromdims == self.ndims:
+      return self.child_refs[self.child_transforms.index(trans[0])].get_from_trans(trans[1:])
+    elif trans[0].fromdims == self.ndims-1:
+      return self.edge_refs[self.edge_transforms.index(trans[0])].get_from_trans(trans[1:])
+    else:
+      raise ValueError
+
   @property
   def connectivity(self):
     # Nested tuple with connectivity information about edges of children:
