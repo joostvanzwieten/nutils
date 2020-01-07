@@ -807,6 +807,72 @@ class UniformDerivedTransforms(Transforms):
     iderived = self._derived_transforms.index(tail[0])
     return iparent*len(self._derived_transforms) + iderived, tail[1:]
 
+class WithIdentifierTransforms(Transforms):
+  '''A sequence that appends a :class:`nutils.transform.Identifier` to all transforms of another sequence.
+
+  Parameters
+  ----------
+  parent : :class:`Transforms`
+      The parent transforms.
+  token : :class:`object`
+      An immutable token that will be used to create the
+      :class:`nutils.transform.Identifier`.
+  '''
+
+  @types.apply_annotations
+  def __init__(self, parent:stricttransforms, token):
+    self._parent = parent
+    self._token = token
+    super().__init__(parent.fromdims)
+
+  def __len__(self):
+    return len(self._parent)
+
+  def __getitem__(self, index):
+    parent_trans = self._parent[index]
+    if isinstance(parent_trans, Transforms):
+      return WithIdentifierTransforms(parent_trans, self._token)
+    else:
+      return parent_trans + (transform.Identifier(parent_trans[-1].fromdims, self._token),)
+
+  def __iter__(self):
+    for parent_trans in self._parent:
+      yield parent_trans + (transform.Identifier(parent_trans[-1].fromdims, self._token),)
+
+  def _remove_identifier(self, trans):
+    if not trans:
+      raise ValueError
+    for i, item in enumerate(trans):
+      if isinstance(item, transform.Identifier) and item.token == self._token:
+        return trans[:i] + trans[i+1:]
+    raise ValueError
+
+  def index_with_tail(self, trans):
+    return self._parent.index_with_tail(self._remove_identifier(trans))
+
+  def index(self, trans):
+    return self._parent.index(self._remove_identifier(trans))
+
+  def contains_with_tail(self, trans):
+    try:
+      head = self._remove_identifier(trans)
+    except ValueError:
+      return False
+    return self._parent.contains_with_tail(head)
+
+  def contains(self, trans):
+    try:
+      head = self._remove_identifier(trans)
+    except ValueError:
+      return False
+    return self._parent.contains(head)
+
+  def refined(self, references):
+    return WithIdentifierTransforms(self._parent.refined(references), self._token)
+
+  def edges(self, references):
+    return WithIdentifierTransforms(self._parent.edges(references), self._token)
+
 class ProductTransforms(Transforms):
   '''The product of two :class:`Transforms` objects.
 

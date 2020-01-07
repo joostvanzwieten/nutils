@@ -216,6 +216,16 @@ class UniformDerivedTransforms(TestCase, Common, Edges):
     self.checkrefs = nutils.elementseq.asreferences([line]*4, 1)
     self.checkfromdims = 1
 
+class WithIdentifierTransforms(TestCase, Common, Edges):
+  def setUp(self):
+    parent = nutils.transformseq.PlainTransforms([(x1,s0),(x1,s1),(x1,s2),(x1,s3)], fromdims=1)
+    self.seq = nutils.transformseq.WithIdentifierTransforms(parent, 'token')
+    token = nutils.transform.Identifier(1, 'token')
+    self.check = (x1,s0,token),(x1,s1,token),(x1,s2,token),(x1,s3,token)
+    self.checkmissing = (x1,s0,nutils.transform.Identifier(1, 'other')),
+    self.checkrefs = nutils.elementseq.asreferences([line]*4, 1)
+    self.checkfromdims = 1
+
 class ChainedTransforms(TestCase, Common, Edges):
   def setUp(self):
     self.seq = nutils.transformseq.ChainedTransforms([nutils.transformseq.PlainTransforms([(x1,s0),(x1,s1)], fromdims=1), nutils.transformseq.PlainTransforms([(x1,s2),(x1,s3)], fromdims=1)])
