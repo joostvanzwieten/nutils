@@ -1468,6 +1468,12 @@ class DisjointUnionTopology(Topology):
   def refined(self):
     return DisjointUnionTopology([topo.refined for topo in self._topos], self._names)
 
+  def basis(self, name, *args, **kwargs):
+    if name == 'discont':
+      return super().basis(name, *args, **kwargs)
+    else:
+      return function.DisjointUnionBasis(topo.basis(name, *args, **kwargs) for topo in self._topos)
+
 class SubsetTopology(Topology):
   'trimmed'
 
