@@ -291,7 +291,7 @@ class Points(Evaluable):
   def __init__(self):
     super().__init__(args=[EVALARGS])
   def evalf(self, evalargs):
-    points = evalargs['_points']
+    points = evalargs['_points'].coords
     assert numeric.isarray(points) and points.ndim == 2
     return types.frozenarray(points)
 

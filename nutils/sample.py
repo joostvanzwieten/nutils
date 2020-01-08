@@ -171,7 +171,7 @@ class Sample(types.Singleton):
     with parallel.ctxrange('integrating', self.nelems) as ielems:
       for ielem in ielems:
         points = self.points[ielem]
-        for iblock, (intdata, *indices) in enumerate(valueindexfunc.eval(_transforms=tuple(t[ielem] for t in self.transforms), _points=points.coords, **arguments)):
+        for iblock, (intdata, *indices) in enumerate(valueindexfunc.eval(_transforms=tuple(t[ielem] for t in self.transforms), _points=points, **arguments)):
           s = slice(*offsets[iblock,ielem:ielem+2])
           data, index = data_index[block2func[iblock]]
           w_intdata = numeric.dot(points.weights, intdata)
@@ -218,7 +218,7 @@ class Sample(types.Singleton):
 
     with parallel.ctxrange('evaluating', self.nelems) as ielems:
       for ielem in ielems:
-        for ifunc, inds, data in idata.eval(_transforms=tuple(t[ielem] for t in self.transforms), _points=self.points[ielem].coords, **arguments):
+        for ifunc, inds, data in idata.eval(_transforms=tuple(t[ielem] for t in self.transforms), _points=self.points[ielem], **arguments):
           numpy.add.at(retvals[ifunc], numpy.ix_(self.index[ielem], *[ind for (ind,) in inds]), data)
 
     return retvals

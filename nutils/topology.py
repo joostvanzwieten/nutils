@@ -294,8 +294,8 @@ class Topology(types.Singleton):
       fun = function.asarray(fun).prepare_eval()
       data = function.Tuple(function.Tuple([fun, onto_f.simplified, function.Tuple(onto_ind)]) for onto_ind, onto_f in function.blocks(onto.prepare_eval()))
       for ref, trans, opp in zip(self.references, self.transforms, self.opposites):
-        ipoints, iweights = ref.getischeme('bezier2')
-        for fun_, onto_f_, onto_ind_ in data.eval(_transforms=(trans, opp), _points=ipoints, **arguments or {}):
+        points = ref.getpoints('bezier', 2)
+        for fun_, onto_f_, onto_ind_ in data.eval(_transforms=(trans, opp), _points=points, **arguments or {}):
           onto_f_ = onto_f_.swapaxes(0,1) # -> dof axis, point axis, ...
           indfun_ = fun_[(slice(None),)+numpy.ix_(*onto_ind_[1:])]
           assert onto_f_.shape[0] == len(onto_ind_[0])
@@ -349,7 +349,7 @@ class Topology(types.Singleton):
     if leveltopo is None:
       with log.iter.percentage('trimming', self.references, self.transforms, self.opposites) as items:
         for ref, trans, opp in items:
-          levels = levelset.eval(_transforms=(trans, opp), _points=ref.getpoints('vertex', maxrefine).coords, **arguments)
+          levels = levelset.eval(_transforms=(trans, opp), _points=ref.getpoints('vertex', maxrefine), **arguments)
           refs.append(ref.trim(levels, maxrefine=maxrefine, ndivisions=ndivisions))
     else:
       log.info('collecting leveltopo elements')
@@ -365,9 +365,9 @@ class Topology(types.Singleton):
           # confirm cover and greedily optimize order
           mask = numpy.ones(len(levels), dtype=bool)
           while mask.any():
-            imax = numpy.argmax([mask[indices].sum() for tail, points, indices in cover])
-            tail, points, indices = cover.pop(imax)
-            levels[indices] = levelset.eval(_transforms=(trans + tail,), _points=points, **arguments)
+            imax = numpy.argmax([mask[indices].sum() for tail, cpoints, indices in cover])
+            tail, cpoints, indices = cover.pop(imax)
+            levels[indices] = levelset.eval(_transforms=(trans + tail,), _points=points.CoordsPoints(cpoints), **arguments)
             mask[indices] = False
           refs.append(ref.trim(levels, maxrefine=maxrefine, ndivisions=ndivisions))
       log.debug('cache', fcache.stats)
@@ -422,12 +422,12 @@ class Topology(types.Singleton):
         try:
           points, projector, basis = bases[ref]
         except KeyError:
-          points, weights = ref.getischeme(ischeme)
+          points = ref.getpoints(*element.parse_legacy_ischeme(ischeme))
           coeffs = ref.get_poly_coeffs('bernstein', degree=degree)
-          basis = numeric.poly_eval(coeffs[_], points)
+          basis = numeric.poly_eval(coeffs[_], points.coords)
           npoints, nfuncs = basis.shape
-          A = numeric.dot(weights, basis[:,:,_] * basis[:,_,:])
-          projector = numpy.linalg.solve(A, basis.T * weights)
+          A = numeric.dot(points.weights, basis[:,:,_] * basis[:,_,:])
+          projector = numpy.linalg.solve(A, basis.T * points.weights)
           bases[ref] = points, projector, basis
 
         for ifunc, ind_val in enumerate(blocks.eval(_transforms=(trans, opp), _points=points, **arguments)):
@@ -436,10 +436,10 @@ class Topology(types.Singleton):
             (allind, sumval), = ind_val
           else:
             allind, where = zip(*[numpy.unique([i for ind, val in ind_val for i in ind[iax]], return_inverse=True) for iax in range(funcs[ifunc].ndim)])
-            sumval = numpy.zeros([len(n) for n in (points,) + allind])
+            sumval = numpy.zeros([len(n) for n in (points.coords,) + allind])
             for ind, val in ind_val:
               I, where = zip(*[(w[:len(n)], w[len(n):]) for w, n in zip(where, ind)])
-              numpy.add.at(sumval, numpy.ix_(range(len(points)), *I), val)
+              numpy.add.at(sumval, numpy.ix_(range(points.npoints), *I), val)
             assert not any(where)
 
           ex = numeric.dot(projector, sumval)
@@ -561,7 +561,7 @@ class Topology(types.Singleton):
           w = p.weights
           xi = (numpy.dot(w,xi) / w.sum())[_] if len(xi) > 1 else xi.copy()
           for iiter in range(maxiter):
-            coord_xi, J_xi = geom_J.eval(_transforms=(self.transforms[ielem], self.opposites[ielem]), _points=xi, **arguments or {})
+            coord_xi, J_xi = geom_J.eval(_transforms=(self.transforms[ielem], self.opposites[ielem]), _points=points.CoordsPoints(xi), **arguments or {})
             err = numpy.linalg.norm(coord - coord_xi)
             if err < tol:
               converged = True

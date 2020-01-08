@@ -1,5 +1,6 @@
 import itertools, pickle, warnings as _builtin_warnings
 from nutils import *
+from nutils.points import CoordsPoints
 from nutils.testing import *
 
 
@@ -46,7 +47,7 @@ class check(TestCase):
         self.fail('arrays are not equal.\nACTUAL : {}\nDESIRED: {}'.format(decimal, *(numpy.array2string(a, prefix='ACTUAL : ') for a in (actual, desired))))
 
   def assertFunctionAlmostEqual(self, actual, desired, decimal):
-    evalargs = dict(_transforms=[trans[0] for trans in self.sample.transforms], _points=self.sample.points[0].coords)
+    evalargs = dict(_transforms=[trans[0] for trans in self.sample.transforms], _points=self.sample.points[0])
     with self.subTest('vanilla'):
       self.assertArrayAlmostEqual(actual.eval(**evalargs), desired, decimal)
     with self.subTest('simplified'):
@@ -272,10 +273,10 @@ class check(TestCase):
     target = target.reshape(-1, target.shape[-1])
     xi = xi0.reshape(-1, xi0.shape[-1])
     while countdown:
-      err = target - self.geom.prepare_eval().eval(_transforms=[elemtrans], _points=xi)
+      err = target - self.geom.prepare_eval().eval(_transforms=[elemtrans], _points=CoordsPoints(xi))
       if numpy.less(numpy.abs(err), 1e-12).all():
         countdown -= 1
-      dxi_root = (Jinv.eval(_transforms=[elemtrans], _points=xi) * err[...,_,:]).sum(-1)
+      dxi_root = (Jinv.eval(_transforms=[elemtrans], _points=CoordsPoints(xi)) * err[...,_,:]).sum(-1)
       #xi = xi + numpy.dot(dxi_root, self.elem.inv_root_transform.T)
       xi = xi + dxi_root
       iiter += 1
@@ -293,7 +294,7 @@ class check(TestCase):
     eps = 1e-5
     while not numpy.all(good):
       fdpoints = points[_,_,:,:] + D[:,:,_,:] * eps
-      tmp = self.n_op(*argsfun.eval(_transforms=[elemtrans], _points=fdpoints.reshape(-1,fdpoints.shape[-1])))
+      tmp = self.n_op(*argsfun.eval(_transforms=[elemtrans], _points=CoordsPoints(fdpoints.reshape(-1,fdpoints.shape[-1]))))
       if len(tmp) == 1 or tmp.dtype.kind in 'bi' or self.zerograd:
         error = exact
       else:
@@ -332,7 +333,7 @@ class check(TestCase):
     eps = 1e-4
     while not numpy.all(good):
       fdpoints = self.find(self.sample.eval(self.geom)[_,_,:,:] + D[:,:,_,:] * eps, points[_,_,:,:])
-      tmp = self.n_op(*argsfun.eval(_transforms=[elemtrans], _points=fdpoints.reshape(-1,fdpoints.shape[-1])))
+      tmp = self.n_op(*argsfun.eval(_transforms=[elemtrans], _points=CoordsPoints(fdpoints.reshape(-1,fdpoints.shape[-1]))))
       if len(tmp) == 1 or tmp.dtype.kind in 'bi' or self.zerograd:
         error = exact
       else:
@@ -359,7 +360,7 @@ class check(TestCase):
     eps = 1e-4
     while not numpy.all(good):
       fdpoints = self.find(self.sample.eval(self.geom)[_,_,_,_,:,:] + DD[:,:,:,:,_,:] * eps, points[_,_,_,_,:,:])
-      tmp = self.n_op(*argsfun.eval(_transforms=[elemtrans], _points=fdpoints.reshape(-1,fdpoints.shape[-1])))
+      tmp = self.n_op(*argsfun.eval(_transforms=[elemtrans], _points=CoordsPoints(fdpoints.reshape(-1,fdpoints.shape[-1]))))
       if len(tmp) == 1 or tmp.dtype.kind in 'bi' or self.zerograd:
         error = exact
       else:
@@ -972,15 +973,15 @@ class CommonBasis:
 
   def test_simplified(self):
     ref = element.PointReference() if self.basis.ndimsdomain == 0 else element.LineReference()**self.basis.ndimsdomain
-    points = ref.getpoints('bezier', 4).coords
+    points = ref.getpoints('bezier', 4)
     simplified = self.basis.simplified
     with _builtin_warnings.catch_warnings():
       _builtin_warnings.simplefilter('ignore', category=function.ExpensiveEvaluationWarning)
       for ielem in range(self.checknelems):
         value = simplified.prepare_eval().eval(_transforms=(self.basis.transforms[ielem],), _points=points)
         if value.shape[0] == 1:
-          value = numpy.tile(value, (points.shape[0], 1))
-        self.assertEqual(value.tolist(), self.checkeval(ielem, points))
+          value = numpy.tile(value, (points.npoints, 1))
+        self.assertEqual(value.tolist(), self.checkeval(ielem, points.coords))
 
 class PlainBasis(CommonBasis, TestCase):
   def setUp(self):

@@ -29,7 +29,7 @@ class TopologyAssertions:
             self.assertEqual(interfaces.opposites[index], opptrans)
           imask[index] += 1
           self.assertEqual(eref, opperef)
-          points = eref.getpoints('gauss', 2).coords
+          points = eref.getpoints('gauss', 2)
           a0 = geom.prepare_eval().eval(_transforms=[trans], _points=points)
           a1 = geom.prepare_eval().eval(_transforms=[opptrans], _points=points)
           numpy.testing.assert_array_almost_equal(a0, a1)
