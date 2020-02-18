@@ -48,8 +48,12 @@ class Topology(types.Singleton):
   @types.apply_annotations
   def __init__(self, roots:types.tuple[function.strictroot], references:elementseq.strictreferences, transforms:transformseq.stricttransforms, opposites:transformseq.stricttransforms):
     assert len(references) == len(transforms) == len(opposites)
-    if len(roots) != 1:
-      raise NotImplementedError
+    if len(set(roots)) < len(roots):
+      raise ValueError('duplicate roots: {!r}'.format(roots))
+    if transforms.todims != tuple(root.ndims for root in roots):
+      raise ValueError("The todims of 'transforms' does not match the ndims for 'roots'.")
+    if opposites.todims != tuple(root.ndims for root in roots):
+      raise ValueError("The todims of 'opposites' does not match the ndims for 'roots'.")
     self.roots = roots
     self.references = references
     self.transforms = transforms
@@ -86,7 +90,7 @@ class Topology(types.Singleton):
     return OppositeTopology(self)
 
   def __or__(self, other):
-    assert isinstance(other, Topology) and other.roots == self.roots and other.ndims == self.ndims
+    assert isinstance(other, Topology) and other.ndims == self.ndims
     return other if not self \
       else self if not other \
       else NotImplemented if isinstance(other, UnionTopology) \
@@ -95,8 +99,6 @@ class Topology(types.Singleton):
   __ror__ = lambda self, other: self.__or__(other)
 
   def __and__(self, other):
-    if not isinstance(other, Topology) or self.roots != other.roots:
-      return NotImplemented
     keep_self = numpy.array(list(map(other.transforms.contains_with_tail, self.transforms)), dtype=bool)
     if keep_self.all():
       return self
@@ -108,10 +110,9 @@ class Topology(types.Singleton):
     # The last condition is to avoid duplicate elements. Note that we could
     # have reused the result of an earlier lookup to avoid a new (using index
     # instead of contains) but we choose to trade some speed for simplicity.
-    root, = self.roots
     references = elementseq.chain([self.references[ind_self], other.references[ind_other]], self.ndims)
-    transforms = transformseq.chain([self.transforms[ind_self], other.transforms[ind_other]], root.ndims)
-    opposites = transformseq.chain([self.opposites[ind_self], other.opposites[ind_other]], root.ndims)
+    transforms = transformseq.chain([self.transforms[ind_self], other.transforms[ind_other]], tuple(root.ndims for root in self.roots))
+    opposites = transformseq.chain([self.opposites[ind_self], other.opposites[ind_other]], tuple(root.ndims for root in self.roots))
     return Topology(self.roots, references, transforms, opposites)
 
   __rand__ = lambda self, other: self.__and__(other)
@@ -120,15 +121,35 @@ class Topology(types.Singleton):
     return self | other
 
   def __sub__(self, other):
-    assert isinstance(other, Topology) and self.roots == other.roots and other.ndims == self.ndims
+    assert isinstance(other, Topology) and other.ndims == self.ndims
     return other.__rsub__(self)
 
   def __rsub__(self, other):
-    assert isinstance(other, Topology) and self.roots == other.roots and other.ndims == self.ndims
+    assert isinstance(other, Topology) and other.ndims == self.ndims
     return other - other.subset(self, newboundary=getattr(self,'boundary',None))
 
+  def mul(self, other, leftopp, rightopp):
+    if not isinstance(other, Topology):
+      return NotImplemented
+    if not set(self.roots).isdisjoint(other.roots):
+      raise ValueError('cannot multiply topologies with common roots')
+    if isinstance(self, EmptyTopology) or isinstance(other, EmptyTopology):
+      return EmptyTopology(self.roots+other.roots, self.ndims+other.ndims)
+    else:
+      return ProductTopology(self, other, leftopp, rightopp)
+
   def __mul__(self, other):
-    return ProductTopology(self, other)
+    leftopp = self.transforms != self.opposites
+    rightopp = other.transforms != other.opposites
+    if leftopp and rightopp:
+      raise ValueError('Cannot mulitply two topologies, both having opposites. Use :meth:`mul_leftopp` or :meth:`mul_rightopp` instead.')
+    return self.mul(other, leftopp, rightopp)
+
+  def mul_leftopp(self, other):
+    return self.mul(other, True, False)
+
+  def mul_rightopp(self, other):
+    return self.mul(other, False, True)
 
   @property
   def border_transforms(self):
@@ -348,10 +369,9 @@ class Topology(types.Singleton):
     levelset = levelset.prepare_eval().simplified
     refs = []
     if leveltopo is None:
-      with log.iter.percentage('trimming', self.references, self.transforms, self.opposites) as items:
-        for ref, trans, opp in items:
-          levels = levelset.eval(_transforms=(trans, opp), _points=ref.getpoints('vertex', maxrefine), **arguments)
-          refs.append(ref.trim(levels, maxrefine=maxrefine, ndivisions=ndivisions))
+      verts = self.sample('vertex', maxrefine)
+      levels = verts.eval(levelset)
+      refs = [ref.trim(levels[i], maxrefine=maxrefine, ndivisions=ndivisions) for ref, i in zip(self.references, verts.index)]
     else:
       log.info('collecting leveltopo elements')
       bins = [set() for ielem in range(len(self))]
@@ -362,13 +382,14 @@ class Topology(types.Singleton):
       with log.iter.percentage('trimming', self.references, self.transforms, bins) as items:
         for ref, trans, ctransforms in items:
           levels = numpy.empty(ref.nvertices_by_level(maxrefine))
-          cover = list(fcache[ref.vertex_cover](frozenset(ctransforms), maxrefine))
+          todims = tuple(t[-1].fromdims for t in trans)
+          cover = list(fcache[ref.vertex_cover](frozenset(ctransforms), maxrefine, todims))
           # confirm cover and greedily optimize order
           mask = numpy.ones(len(levels), dtype=bool)
           while mask.any():
             imax = numpy.argmax([mask[indices].sum() for tail, cpoints, indices in cover])
             tail, cpoints, indices = cover.pop(imax)
-            levels[indices] = levelset.eval(_transforms=(trans + tail,), _points=points.CoordsPoints(cpoints), **arguments)
+            levels[indices] = levelset.eval(_transforms=(tuple(a+b for a, b in zip(trans, tail)),), _points=points.CoordsPoints(cpoints), **arguments)
             mask[indices] = False
           refs.append(ref.trim(levels, maxrefine=maxrefine, ndivisions=ndivisions))
       log.debug('cache', fcache.stats)
@@ -376,8 +397,6 @@ class Topology(types.Singleton):
 
   def subset(self, topo, newboundary=None, strict=False):
     'intersection'
-    if topo.roots != self.roots:
-      raise ValueError('different roots')
     refs = [ref.empty for ref in self.references]
     for ref, trans in zip(topo.references, topo.transforms):
       try:
@@ -757,7 +776,7 @@ class WithGroupsTopology(Topology):
     self.igroups = igroups
     self.pgroups = pgroups
     super().__init__(basetopo.roots, basetopo.references, basetopo.transforms, basetopo.opposites)
-    assert all(topo is Ellipsis or isinstance(topo, str) or isinstance(topo, Topology) and topo.roots == basetopo.roots and topo.ndims == basetopo.ndims for topo in self.vgroups.values())
+    assert all(topo is Ellipsis or isinstance(topo, str) or isinstance(topo, Topology) and topo.ndims == basetopo.ndims for topo in self.vgroups.values())
 
   def __len__(self):
     return len(self.basetopo)
@@ -847,8 +866,7 @@ class EmptyTopology(Topology):
 
   @types.apply_annotations
   def __init__(self, roots:types.tuple[function.strictroot], ndims:types.strictint):
-    root, = roots
-    super().__init__(roots, elementseq.EmptyReferences(ndims), transformseq.EmptyTransforms(root.ndims), transformseq.EmptyTransforms(root.ndims))
+    super().__init__(roots, elementseq.EmptyReferences(ndims), transformseq.EmptyTransforms(tuple(root.ndims for root in roots)), transformseq.EmptyTransforms(tuple(root.ndims for root in roots)))
 
   def __or__(self, other):
     assert self.ndims == other.ndims
@@ -864,17 +882,16 @@ class Point(Topology):
 
   @types.aspreprocessor
   @types.apply_annotations
-  def _preprocess_init(self, roots:types.tuple[function.strictroot], trans:transform.stricttransform, opposite:transform.stricttransform=None):
-    return (self, roots, trans, trans if opposite is None else opposite), {}
+  def _preprocess_init(self, root:function.strictroot, trans:transform.stricttransform, opposite:transform.stricttransform=None):
+    return (self, root, trans, trans if opposite is None else opposite), {}
 
   @_preprocess_init
-  def __init__(self, roots, trans, opposite):
+  def __init__(self, root, trans, opposite):
     assert trans[-1].fromdims == 0
-    root, = roots
     references = elementseq.asreferences([element.getsimplex(0)], 0)
     transforms = transformseq.PlainTransforms((trans,), root.ndims, 0)
     opposites = transforms if opposite is None else transformseq.PlainTransforms((opposite,), root.ndims, 0)
-    super().__init__(roots, references, transforms, opposites)
+    super().__init__((root,), references, transforms, opposites)
 
 def StructuredLine(root:function.strictroot, i:types.strictint, j:types.strictint, periodic:bool=False, bnames:types.tuple[types.strictstr]=None):
   if bnames is None:
@@ -1431,12 +1448,11 @@ class UnionTopology(Topology):
         assert len(set(self._topos[itopo].opposites[itrans] for itopo, itrans in indices)) == 1
     selections = tuple(map(types.frozenarray[int], selections))
 
-    root, = roots
     super().__init__(
       roots,
       elementseq.asreferences(references, ndims),
-      transformseq.chain((topo.transforms[selection] for topo, selection in zip(topos, selections)), root.ndims),
-      transformseq.chain((topo.opposites[selection] for topo, selection in zip(topos, selections)), root.ndims))
+      transformseq.chain((topo.transforms[selection] for topo, selection in zip(topos, selections)), tuple(root.ndims for root in roots)),
+      transformseq.chain((topo.opposites[selection] for topo, selection in zip(topos, selections)), tuple(root.ndims for root in roots)))
 
   def getitem(self, item):
     topos = [topo if name == item else topo.getitem(item) for topo, name in itertools.zip_longest(self._topos, self._names)]
@@ -1464,12 +1480,11 @@ class DisjointUnionTopology(Topology):
     roots = self._topos[0].roots
     ndims = self._topos[0].ndims
     assert all(topo.roots == roots and topo.ndims == ndims for topo in self._topos)
-    root, = roots
     super().__init__(
       roots,
       elementseq.chain((topo.references for topo in self._topos), ndims),
-      transformseq.chain((topo.transforms for topo in self._topos), root.ndims),
-      transformseq.chain((topo.opposites for topo in self._topos), root.ndims))
+      transformseq.chain((topo.transforms for topo in self._topos), tuple(root.ndims for root in roots)),
+      transformseq.chain((topo.opposites for topo in self._topos), tuple(root.ndims for root in roots)))
 
   def getitem(self, item):
     topos = [topo if name == item else topo.getitem(item) for topo, name in itertools.zip_longest(self._topos, self._names)]
@@ -1567,7 +1582,7 @@ class SubsetTopology(Topology):
         if ioppelem == -1:
           # If the edge had no opposite in basetopology then it must already by
           # in baseboundary, so we can use index to locate it.
-          brefs[baseboundary.transforms.index(elemtrans+(edgetrans,))] = edgeref
+          brefs[baseboundary.transforms.index(transform.append_edge(elemtrans, edgetrans))] = edgeref
         else:
           # If the edge did have an opposite in basetopology then there is a
           # possibility this opposite (partially) disappeared, in which case
@@ -1576,15 +1591,18 @@ class SubsetTopology(Topology):
           oppref = self.refs[ioppelem]
           edgeref -= oppref.edge_refs[ioppedge]
           if edgeref:
+            elemfromdims = tuple(t[-1].fromdims for t in elemtrans)
+            oppelemfromdims = tuple(t[-1].fromdims for t in self.basetopo.transforms[ioppelem])
             trimmedreferences.append(edgeref)
-            trimmedtransforms.append(addtrimmededge(ielem, edgetrans))
-            trimmedopposites.append(addtrimmededge(ioppelem, oppref.edge_transforms[ioppedge]))
+            trimmedtransforms.append(addtrimmededge(ielem, edgetrans.separate(elemfromdims)))
+            trimmedopposites.append(addtrimmededge(ioppelem, oppref.edge_transforms[ioppedge].separate(oppelemfromdims)))
       # The last edges of newref (beyond the number of edges of the original)
       # cannot have opposites and are added to the trimmed group directly.
       for edgetrans, edgeref in newref.edges[len(ioppelems):]:
+        elemfromdims = tuple(t[-1].fromdims for t in elemtrans)
         trimmedreferences.append(edgeref)
-        trimmedtransforms.append(addtrimmededge(ielem, edgetrans))
-        trimmedopposites.append(addtrimmededge(ielem, edgetrans.flipped))
+        trimmedtransforms.append(addtrimmededge(ielem, edgetrans.separate(elemfromdims)))
+        trimmedopposites.append(addtrimmededge(ielem, edgetrans.flipped.separate(elemfromdims)))
     trimmedreferences = elementseq.asreferences(trimmedreferences, self.ndims-1)
     trimmedielems, trimmededges = zip(*sorted(trimmededges.items(), key=lambda item: item[0]))
     trimmedoffsets = dict(zip(trimmedielems, numpy.cumsum([0, *map(len, trimmededges)])))
@@ -1698,8 +1716,7 @@ class HierarchicalTopology(Topology):
         opposites.append(level.opposites[indices])
     self.levels = tuple(levels)
 
-    root, = basetopo.roots
-    super().__init__(basetopo.roots, elementseq.chain(references, basetopo.ndims), transformseq.chain(transforms, root.ndims), transformseq.chain(opposites, root.ndims))
+    super().__init__(basetopo.roots, elementseq.chain(references, basetopo.ndims), transformseq.chain(transforms, tuple(root.ndims for root in basetopo.roots)), transformseq.chain(opposites, tuple(root.ndims for root in basetopo.roots)))
 
   def getitem(self, item):
     itemtopo = self.basetopo.getitem(item)
@@ -1728,7 +1745,7 @@ class HierarchicalTopology(Topology):
       coarse_indices = tuple(map(indices_per_level[ilevel].pop, reversed(refine[start:stop]-self._offsets[ilevel])))
       coarse_transforms = map(coarse.transforms.__getitem__, coarse_indices)
       coarse_references = map(coarse.references.__getitem__, coarse_indices)
-      fine_transforms = (trans+(ctrans,) for trans, ref in zip(coarse_transforms, coarse_references) for ctrans, cref in ref.children if cref)
+      fine_transforms = itertools.chain.from_iterable(map(transform.unempty_child_transforms, coarse_transforms, coarse_references))
       indices_per_level[ilevel+1].extend(map(fine.transforms.index, fine_transforms))
     if not indices_per_level[-1]:
       indices_per_level.pop(-1)
@@ -1742,7 +1759,7 @@ class HierarchicalTopology(Topology):
       coarse, fine = fine, fine.refined
       coarse_transforms = map(coarse.transforms.__getitem__, coarse_indices)
       coarse_references = map(coarse.references.__getitem__, coarse_indices)
-      fine_transforms = (trans+(ctrans,) for trans, ref in zip(coarse_transforms, coarse_references) for ctrans, cref in ref.children if cref)
+      fine_transforms = itertools.chain.from_iterable(map(transform.unempty_child_transforms, coarse_transforms, coarse_references))
       refined_indices_per_level.append(numpy.unique(numpy.fromiter(map(fine.transforms.index, fine_transforms), dtype=int)))
     return HierarchicalTopology(self.basetopo, refined_indices_per_level)
 
@@ -1757,13 +1774,12 @@ class HierarchicalTopology(Topology):
       bindex = blevel.transforms.index
       bindices = []
       for index in indices:
-        for etrans, eref in level.references[index].edges:
-          if eref:
-            trans = transform.uppermost(level.transforms[index]+(etrans,))
-            try:
-              bindices.append(bindex(trans))
-            except ValueError:
-              pass
+        for trans in transform.unempty_edge_transforms(level.transforms[index], level.references[index]):
+          trans = tuple(map(transform.uppermost, trans))
+          try:
+            bindices.append(bindex(trans))
+          except ValueError:
+            pass
       bindices = numpy.array(bindices, dtype=int)
       if len(bindices) > 1:
         bindices.sort()
@@ -1783,12 +1799,10 @@ class HierarchicalTopology(Topology):
       selection = []
       to = level.interfaces.transforms, level.interfaces.opposites
       for trans, ref in zip(map(level.transforms.__getitem__, indices), map(level.references.__getitem__, indices)):
-        for etrans, eref in ref.edges:
-          if not eref:
-            continue
+        for trans_etrans in transform.unempty_edge_transforms(trans, ref):
           for transforms, opposites in to, to[::-1]:
             try:
-              i = transforms.index(trans+(etrans,))
+              i = transforms.index(trans_etrans)
             except ValueError:
               continue
             if self.transforms.contains_with_tail(opposites[i]):
@@ -1799,8 +1813,7 @@ class HierarchicalTopology(Topology):
         hreferences.append(level.interfaces.references[selection])
         htransforms.append(level.interfaces.transforms[selection])
         hopposites.append(level.interfaces.opposites[selection])
-    root, = self.roots
-    return Topology(self.roots, elementseq.chain(hreferences, self.ndims-1), transformseq.chain(htransforms, root.ndims), transformseq.chain(hopposites, root.ndims))
+    return Topology(self.roots, elementseq.chain(hreferences, self.ndims-1), transformseq.chain(htransforms, tuple(root.ndims for root in self.roots)), transformseq.chain(hopposites, tuple(root.ndims for root in self.roots)))
 
   @log.withcontext
   def basis(self, name, *args, truncation_tolerance=1e-15, **kwargs):
@@ -1892,8 +1905,11 @@ class HierarchicalTopology(Topology):
     for ilevel, (level, indices) in enumerate(zip(self.levels, self._indices_per_level)):
       for ilocal in indices:
 
-        hbasis_trans = transform.canonical(level.transforms[ilocal])
-        tail = hbasis_trans[len(hbasis_trans)-ilevel:]
+        hbasis_trans = tuple(map(transform.canonical, level.transforms[ilocal]))
+        tail = tuple(t[len(t)-ilevel:] for t in hbasis_trans)
+        lentail = len(tail[0])
+        if not all(len(t) == lentail for t in tail):
+          raise NotImplementedError('variable length tails, possibly caused by anisotropic refinements, are not supported')
         trans_dofs = []
         trans_coeffs = []
 
@@ -1914,8 +1930,8 @@ class HierarchicalTopology(Topology):
               mypoly = ubases[h].get_coefficients(ilocal)
               trans_coeffs.append(mypoly[myactive])
 
-            if h < len(tail):
-              trans_coeffs = [tail[h].transform_poly(c) for c in trans_coeffs]
+            if h < lentail:
+              trans_coeffs = [transform.transform_poly(tuple(t[h] for t in tail), c) for c in trans_coeffs]
 
         else: # truncated hierarchical basis
 
@@ -1923,8 +1939,8 @@ class HierarchicalTopology(Topology):
             mydofs = ubases[h].get_dofs(ilocal)
             mypoly = ubases[h].get_coefficients(ilocal)
 
-            truncpoly = mypoly if h == len(tail) \
-              else numpy.tensordot(numpy.tensordot(tail[h].transform_poly(mypoly), project[...,mypassive], self.ndims), truncpoly[mypassive], 1)
+            truncpoly = mypoly if h == lentail \
+              else numpy.tensordot(numpy.tensordot(transform.transform_poly(tuple(t[h] for t in tail), mypoly), project[...,mypassive], self.ndims), truncpoly[mypassive], 1)
 
             imyactive = numeric.sorted_index(ubasis_active[h], mydofs, missing=-1)
             myactive = numpy.greater_equal(imyactive, 0) & numpy.greater(abs(truncpoly), truncation_tolerance).any(axis=tuple(range(1,truncpoly.ndim)))
