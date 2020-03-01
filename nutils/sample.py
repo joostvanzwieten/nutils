@@ -151,7 +151,7 @@ class Sample(types.Singleton):
     if blocks:
       sizefunc = function.stack([f.size for ifunc, ind, f in blocks]).simplified
       for ielem, transforms in enumerate(zip(*self.transforms)):
-        n, = sizefunc.eval(_transforms=transforms, **arguments)
+        n, = sizefunc.eval(function.Subsample(roots=self.roots, transforms=transforms, points=self.points[ielem]), **arguments)
         offsets[:,ielem+1] = offsets[:,ielem] + n
 
     # Since several blocks may belong to the same function, we post process the
@@ -178,7 +178,7 @@ class Sample(types.Singleton):
     with parallel.ctxrange('integrating', self.nelems) as ielems:
       for ielem in ielems:
         points = self.points[ielem]
-        for iblock, (intdata, *indices) in enumerate(valueindexfunc.eval(_transforms=tuple(t[ielem] for t in self.transforms), _points=points, **arguments)):
+        for iblock, (intdata, *indices) in enumerate(valueindexfunc.eval(function.Subsample(roots=self.roots, transforms=tuple(t[ielem] for t in self.transforms), points=points), **arguments)):
           s = slice(*offsets[iblock,ielem:ielem+2])
           data, index = data_index[block2func[iblock]]
           w_intdata = numeric.dot(points.weights, intdata)
@@ -225,7 +225,7 @@ class Sample(types.Singleton):
 
     with parallel.ctxrange('evaluating', self.nelems) as ielems:
       for ielem in ielems:
-        for ifunc, inds, data in idata.eval(_transforms=tuple(t[ielem] for t in self.transforms), _points=self.points[ielem], **arguments):
+        for ifunc, inds, data in idata.eval(function.Subsample(roots=self.roots, transforms=tuple(t[ielem] for t in self.transforms), points=self.points[ielem]), **arguments):
           numpy.add.at(retvals[ifunc], numpy.ix_(self.index[ielem], *[ind for (ind,) in inds]), data)
 
     return retvals
