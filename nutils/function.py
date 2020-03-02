@@ -223,7 +223,7 @@ class Evaluable(types.Singleton):
       if prefix:
         s = prefix[:-2] + select[bridge.index(prefix[-2:])] + s # locally change prefix into selector
       if ordereddeps[n] is not None:
-        s += ' = {} {}'.format(ordereddeps[n]._asciitree_str(), ','.join(sorted(tuple(map('{0.name}[{0.ndims}]'.format, ordereddeps[n].roots)))))
+        s += ' = {} {}'.format(ordereddeps[n]._asciitree_str(), ','.join(sorted(tuple(map('{0.name}:{0.ndims}'.format, ordereddeps[n].roots)))))
         pool.extend((prefix + bridge[i==0], arg) for i, arg in enumerate(reversed(self.dependencytree[n])))
         ordereddeps[n] = None
       lines.append(s)
@@ -762,7 +762,7 @@ class RootBasis(Array):
     for root, chain in zip(roots, chains):
       to1 = to0 + root.ndims
       fromdims = chain[-1].fromdims if chain else root.ndims
-      chainlinear = transform.linearfrom(chain, ndims)
+      chainlinear = transform.linearfrom(chain, root.ndims)
       if fromdims:
         from1 = from0 + fromdims
         chainslinear[to0:to1,from0:from1] = chainlinear[:,:fromdims]
@@ -877,6 +877,12 @@ class Constant(Array):
   def __init__(self, value:types.frozenarray):
     self.value = value
     super().__init__(args=[], shape=value.shape, dtype=value.dtype)
+
+  def _asciitree_str(self):
+    if self.value.ndim == 0:
+      return str(self.value)
+    else:
+      return super()._asciitree_str()
 
   @property
   def simplified(self):
@@ -1299,18 +1305,25 @@ class ApplyTransforms(Array):
     result = numpy.zeros((*(subsample.npoints for subsample in subsamples), self.shape[0]), dtype=float)
     to0 = 0
     for root, chain in zip(self._head.ordered_roots, chains[0]):
-      to1 = chain[0].todims if chain else root.ndims
+      to1 = to0 + (chain[0].todims if chain else root.ndims)
       isubsample = isubsamples[root]
       expand = tuple(slice(None) if i == isubsample else numpy.newaxis for i in range(len(subsamples)))
-      result[expand+(slice(to0, to1),)] = transform.apply(chain, subsamples[isubsample].points.coords[:,slices[root]])
+      result[...,to0:to1] = transform.apply(chain, subsamples[isubsample].points.coords[:,slices[root]])[expand]
       to0 = to1
+    assert to0 == self.shape[0]
     return result.reshape((-1, self.shape[0]))
 
   def _derivative(self, var, seen):
-    if isinstance(var, RootCoords) and self.roots == var.roots and len(var) > 0:
-      if self._head.fromdims != len(var):
+    if isinstance(var, RootCoords) and var.root in self.roots:
+      if self._head.fromdims != builtins.sum(root.ndims for root in self.roots):
         raise NotImplementedError('transform contains updims')
-      return Inverse(Linear(self._head, len(var)))
+      to0 = 0
+      for root in self._head.ordered_roots:
+        to1 = to0 + root.ndims
+        if root == var.root:
+          return Inverse(Linear(self._head, self._head.fromdims))[:,to0:to1]
+        to0 = to1
+      raise Exception
     return zeros(self.shape+var.shape)
 
 class Linear(Array):
@@ -3788,6 +3801,42 @@ class PrunedBasis(Basis):
       raise IndexError('dof out of bounds')
     return numeric.sorted_index(self._transmap, self._parent.get_support(self._dofmap[dof]), missing='mask')
 
+class ProductBasis(Basis):
+
+  __slots__ = '_basis1', '_basis2'
+
+  @types.apply_annotations
+  def __init__(self, basis1:strictbasis, basis2:strictbasis, trans:types.strict[TransformChain]):
+    self._basis1 = basis1
+    self._basis2 = basis2
+    super().__init__(basis1.ndofs*basis2.ndofs, basis1.transforms*basis2.transforms, basis1.ndimsdomain+basis2.ndimsdomain, trans)
+
+  def get_dofs(self, ielem):
+    if not numeric.isint(ielem):
+      return super().get_dofs(ielem)
+    ielem1, ielem2 = divmod(ielem, len(self._basis2.transforms))
+    dofs1 = self._basis1.get_dofs(ielem1)
+    dofs2 = self._basis2.get_dofs(ielem2)
+    return (dofs1[:,_] * self._basis2.ndofs + dofs2[_,:]).ravel()
+
+  def get_coefficients(self, ielem):
+    if not numeric.isint(ielem):
+      return super().get_coefficients(ielem)
+    ielem1, ielem2 = divmod(ielem, len(self._basis2.transforms))
+    coeffs1 = self._basis1.get_coefficients(ielem1)
+    coeffs2 = self._basis2.get_coefficients(ielem2)
+    return numeric.poly_outer_product(coeffs1, coeffs2)
+
+  def get_support(self, dof):
+    dof1, dof2 = divmod(dof, self._basis2.ndofs)
+    supp1 = self._basis1.get_support(dof1)
+    supp2 = self._basis2.get_support(dof2)
+    return (supp1[:,_] * len(self._basis2.transforms) + supp2[_,:]).ravel()
+
+  @property
+  def simplified(self):
+    return ravel(self._basis1.simplified[:,_] * self._basis2.simplified[_,:], 0)
+
 # AUXILIARY FUNCTIONS (FOR INTERNAL USE)
 
 _ascending = lambda arg: numpy.greater(numpy.diff(arg), 0).all()
@@ -4072,8 +4121,12 @@ def add_T(arg, axes=(-2,-1)):
 def blocks(arg):
   return asarray(arg).simplified.blocks
 
-def rootcoords(root):
-  return ApplyTransforms(EmptyTransformChain(roots=(root,), todims=(root.ndims,), fromdims=(root.ndims,)), SelectChain((root,)))
+def rootcoords(roots):
+  if isinstance(roots, Root):
+    roots = roots,
+  else:
+    roots = tuple(roots)
+  return ApplyTransforms(EmptyTransformChain(roots=roots, todims=tuple(root.ndims for root in roots), fromdims=tuple(root.ndims for root in roots)), SelectChain(roots))
 
 def opposite(arg):
   return Opposite(arg)

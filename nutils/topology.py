@@ -1500,6 +1500,10 @@ class DisjointUnionTopology(Topology):
   def refined(self):
     return DisjointUnionTopology([topo.refined for topo in self._topos], self._names)
 
+  def integral(self, func, ischeme='gauss', degree=None, edit=None):
+    assert edit is None
+    return util.sum(topo.integral(func, ischeme=ischeme, degree=degree) for topo in self._topos)
+
 class SubsetTopology(Topology):
   'trimmed'
 
@@ -2015,7 +2019,7 @@ class ProductTopology(Topology):
       return rbasis
     if not rbasis:
       return lbasis
-    return function.ProductBasis(lbasis, rbasis, *transformseq.index_coords(self.transforms, self.roots))
+    return function.ProductBasis(lbasis, rbasis, function.SelectChain(self.roots))
 
   def basis(self, name, *args, **kwargs):
     if name in ('spline', 'h-spline', 'th-spline'):
@@ -2069,6 +2073,9 @@ class ProductTopology(Topology):
   @property
   def refined(self):
     return self._left.refined.mul(self._right.refined, self._leftopp, self._rightopp)
+
+  def sample(self, ischeme, degree):
+    return sample.ProductSample(self._left.sample(ischeme, degree), self._right.sample(ischeme, degree))
 
 class RevolutionTopology(Topology):
   'topology consisting of a single revolution element'

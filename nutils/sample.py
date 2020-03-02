@@ -44,7 +44,7 @@ efficiently combine common substructures.
 '''
 
 from . import types, points, util, function, parallel, numeric, matrix, transformseq
-import numpy, numbers, collections.abc, os, treelog as log
+import numpy, numbers, collections.abc, os, treelog as log, operator
 
 graphviz = os.environ.get('NUTILS_GRAPHVIZ')
 
@@ -150,8 +150,8 @@ class Sample(types.Singleton):
     offsets = numpy.zeros((len(blocks), self.nelems+1), dtype=int)
     if blocks:
       sizefunc = function.stack([f.size for ifunc, ind, f in blocks]).simplified
-      for ielem, transforms in enumerate(zip(*self.transforms)):
-        n, = sizefunc.eval(function.Subsample(roots=self.roots, transforms=transforms, points=self.points[ielem]), **arguments)
+      for ielem in range(self.nelems):
+        n, = sizefunc.eval(*self.getsubsamples(ielem), **arguments)
         offsets[:,ielem+1] = offsets[:,ielem] + n
 
     # Since several blocks may belong to the same function, we post process the
@@ -177,11 +177,15 @@ class Sample(types.Singleton):
     valueindexfunc = function.Tuple(function.Tuple([value]+list(index)) for value, index in zip(values, indices))
     with parallel.ctxrange('integrating', self.nelems) as ielems:
       for ielem in ielems:
-        points = self.points[ielem]
-        for iblock, (intdata, *indices) in enumerate(valueindexfunc.eval(function.Subsample(roots=self.roots, transforms=tuple(t[ielem] for t in self.transforms), points=points), **arguments)):
+        subsamples = self.getsubsamples(ielem)
+        weights = numpy.ones((1,))
+        for subsample in reversed(subsamples):
+          weights = weights[...,numpy.newaxis] * subsample.points.weights
+        weights = weights.ravel()
+        for iblock, (intdata, *indices) in enumerate(valueindexfunc.eval(*subsamples, **arguments)):
           s = slice(*offsets[iblock,ielem:ielem+2])
           data, index = data_index[block2func[iblock]]
-          w_intdata = numeric.dot(points.weights, intdata)
+          w_intdata = numeric.dot(weights, intdata)
           data[s] = w_intdata.ravel()
           si = (slice(None),) + (numpy.newaxis,) * (w_intdata.ndim-1)
           for idim, (ii,) in enumerate(indices):
@@ -225,7 +229,7 @@ class Sample(types.Singleton):
 
     with parallel.ctxrange('evaluating', self.nelems) as ielems:
       for ielem in ielems:
-        for ifunc, inds, data in idata.eval(function.Subsample(roots=self.roots, transforms=tuple(t[ielem] for t in self.transforms), points=self.points[ielem]), **arguments):
+        for ifunc, inds, data in idata.eval(*self.getsubsamples(ielem), **arguments):
           numpy.add.at(retvals[ifunc], numpy.ix_(self.index[ielem], *[ind for (ind,) in inds]), data)
 
     return retvals
@@ -316,7 +320,26 @@ class Sample(types.Singleton):
     offset = numpy.cumsum([0] + [p.npoints for p in points])
     return Sample(self.roots, self.ndims, transforms, points, map(numpy.arange, offset[:-1], offset[1:]))
 
+  def getsubsamples(self, ielem):
+    return function.Subsample(roots=self.roots, transforms=tuple(t[ielem] for t in self.transforms), points=self.points[ielem]),
+
 strictsample = types.strict[Sample]
+
+class ProductSample(Sample):
+
+  @types.apply_annotations
+  def __init__(self, sample1:strictsample, sample2:strictsample):
+    self._sample1 = sample1
+    self._sample2 = sample2
+    super().__init__(sample1.roots+sample2.roots,
+                     sample1.ndims+sample2.ndims,
+                     tuple(map(operator.mul, sample1.transforms, sample2.transforms)),
+                     tuple(points.TensorPoints(points1, points2) for points1 in sample1.points for points2 in sample2.points), # TODO: make lazy
+                     tuple((index1[:,numpy.newaxis]*sample2.npoints + index2[numpy.newaxis,:]).ravel() for index1 in sample1.index for index2 in sample2.index))
+
+  def getsubsamples(self, ielem):
+    ielem1, ielem2 = divmod(ielem, self._sample2.nelems)
+    return self._sample1.getsubsamples(ielem1) + self._sample2.getsubsamples(ielem2)
 
 class Integral(types.Singleton):
   '''Postponed integration.

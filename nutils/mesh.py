@@ -27,7 +27,7 @@ provided at this point.
 """
 
 from . import topology, function, util, element, elementseq, numpy, numeric, transform, transformseq, warnings, types, cache, _
-import os, itertools, re, math, treelog as log
+import os, itertools, re, math, treelog as log, functools
 
 # MESH GENERATORS
 
@@ -88,18 +88,14 @@ def line(nodes, periodic=False, bnames=None, *, rootid='line'):
   geom = function.rootcoords(root) * scale + offset if uniform else domain.basis('std', degree=1, periodic=False).dot(nodes)
   return domain, geom
 
-def newrectilinear(nodes, periodic=None, bnames=[['left','right'],['bottom','top'],['front','back']]):
+def newrectilinear(nodes, periodic=None, bnames=[['left','right'],['bottom','top'],['front','back']], rootnames='XYZABX'):
   if periodic is None:
     periodic = numpy.zeros(len(nodes), dtype=bool)
   else:
     periodic = numpy.asarray(periodic)
     assert len(periodic) == len(nodes) and periodic.ndim == 1 and periodic.dtype == bool
-  dims = [line(nodesi, periodici, bnamesi, rootid=rootid) for nodesi, periodici, bnamesi, rootid in zip(nodes, periodic, tuple(bnames)+(None,)*len(nodes), 'XYZABC')]
-  domain, geom = dims.pop(0)
-  for domaini, geomi in dims:
-    domain = domain * domaini
-    geom = function.concatenate(function.bifurcate(geom,geomi))
-  return domain, geom
+  domains, geoms = zip(*(line(nodesi, periodici, bnamesi, rootid=rootid) for nodesi, periodici, bnamesi, rootid in zip(nodes, periodic, tuple(bnames)+(None,)*len(nodes), rootnames)))
+  return functools.reduce(lambda l, r: topology.ProductTopology(l, r, False, False), domains), function.concatenate(geoms, axis=0)
 
 @log.withcontext
 def multipatch(patches, nelems, patchverts=None, name='multipatch'):
@@ -797,12 +793,12 @@ def unitsquare(nelems, etype):
       The geometry function.
   '''
 
-  root = function.Root('unitsquare', 2)
-
   if etype == 'square':
-    topo = topology.StructuredTopology(root, [transformseq.DimAxis(0, nelems, False)] * 2)
+    topo, geom = newrectilinear([nelems]*2)
+    #return topo, geom/nelems
 
   elif etype in ('triangle', 'mixed'):
+    root = function.Root('unitsquare', 2)
     simplices = numpy.concatenate([
       numpy.take([i*(nelems+1)+j, i*(nelems+1)+j+1, (i+1)*(nelems+1)+j, (i+1)*(nelems+1)+j+1], [[0,1,2],[1,2,3]] if i%2==j%2 else [[0,1,3],[0,2,3]], axis=0)
         for i in range(nelems) for j in range(nelems)])
@@ -833,6 +829,6 @@ def unitsquare(nelems, etype):
   else:
     raise Exception('invalid element type {!r}'.format(etype))
 
-  return topo, function.rootcoords(root) / nelems
+  return topo, function.rootcoords(topo.roots) / nelems
 
 # vim:sw=2:sts=2:et
