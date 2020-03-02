@@ -90,11 +90,8 @@ def line(nodes, periodic=False, bnames=None, *, rootid='line'):
 
 def newrectilinear(nodes, periodic=None, bnames=[['left','right'],['bottom','top'],['front','back']], rootnames='XYZABX'):
   if periodic is None:
-    periodic = numpy.zeros(len(nodes), dtype=bool)
-  else:
-    periodic = numpy.asarray(periodic)
-    assert len(periodic) == len(nodes) and periodic.ndim == 1 and periodic.dtype == bool
-  domains, geoms = zip(*(line(nodesi, periodici, bnamesi, rootid=rootid) for nodesi, periodici, bnamesi, rootid in zip(nodes, periodic, tuple(bnames)+(None,)*len(nodes), rootnames)))
+    periodic = []
+  domains, geoms = zip(*(line(nodesi, idim in periodic, bnamesi, rootid=rootid) for idim, (nodesi, bnamesi, rootid) in enumerate(zip(nodes, tuple(bnames)+(None,)*len(nodes), rootnames))))
   return functools.reduce(lambda l, r: topology.ProductTopology(l, r, False, False), domains), function.concatenate(geoms, axis=0)
 
 @log.withcontext

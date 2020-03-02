@@ -425,7 +425,7 @@ class SelectChain(TransformChain):
     for root in self.ordered_roots:
       for subsample in subsamples:
         if root in subsample.roots:
-          trans.append(subsample.transforms[self.n][subsample.roots.index(root)])
+          trans.append(subsample.transforms[self.n if len(subsample.transforms) > 1 else 0][subsample.roots.index(root)])
           break
       else:
         raise ValueError('no such root: {!r}'.format(root))
