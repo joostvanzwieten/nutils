@@ -31,46 +31,6 @@ import os, itertools, re, math, treelog as log, functools
 
 # MESH GENERATORS
 
-@log.withcontext
-def rectilinear(richshape, periodic=(), name='rect'):
-  'rectilinear mesh'
-
-  ndims = len(richshape)
-  shape = []
-  offset = []
-  scale = []
-  uniform = True
-  for v in richshape:
-    if numeric.isint(v):
-      assert v > 0
-      shape.append(v)
-      scale.append(1)
-      offset.append(0)
-    elif numpy.equal(v, numpy.linspace(v[0],v[-1],len(v))).all():
-      shape.append(len(v)-1)
-      scale.append((v[-1]-v[0]) / float(len(v)-1))
-      offset.append(v[0])
-    else:
-      shape.append(len(v)-1)
-      uniform = False
-
-  root = function.Root(name, ndims)
-  axes = [transformseq.DimAxis(0,n,idim in periodic) for idim, n in enumerate(shape)]
-  topo = topology.StructuredTopology(root, axes)
-
-  if uniform:
-    if all(o == offset[0] for o in offset[1:]):
-      offset = offset[0]
-    if all(s == scale[0] for s in scale[1:]):
-      scale = scale[0]
-    geom = function.rootcoords(root) * scale + offset
-  else:
-    funcsp = topo.basis('spline', degree=1, periodic=())
-    coords = numeric.meshgrid(*richshape).reshape(ndims, -1)
-    geom = (funcsp * coords).sum(-1)
-
-  return topo, geom
-
 def line(nodes, periodic=False, bnames=None, *, rootid='line'):
   if isinstance(nodes, int):
     uniform = True
@@ -88,11 +48,13 @@ def line(nodes, periodic=False, bnames=None, *, rootid='line'):
   geom = function.rootcoords(root) * scale + offset if uniform else domain.basis('std', degree=1, periodic=False).dot(nodes)
   return domain, geom
 
-def newrectilinear(nodes, periodic=None, bnames=[['left','right'],['bottom','top'],['front','back']], rootnames='XYZABX'):
+def rectilinear(nodes, periodic=None, bnames=[['left','right'],['bottom','top'],['front','back']], rootnames='XYZABX'):
   if periodic is None:
     periodic = []
   domains, geoms = zip(*(line(nodesi, idim in periodic, bnamesi, rootid=rootid) for idim, (nodesi, bnamesi, rootid) in enumerate(zip(nodes, tuple(bnames)+(None,)*len(nodes), rootnames))))
   return functools.reduce(lambda l, r: topology.ProductTopology(l, r, False, False), domains), function.concatenate(geoms, axis=0)
+
+newrectilinear = rectilinear
 
 @log.withcontext
 def multipatch(patches, nelems, patchverts=None, name='multipatch'):
