@@ -315,9 +315,9 @@ class Topology(types.Singleton):
       I = numpy.zeros(onto.shape[0], dtype=bool)
       fun = function.asarray(fun).prepare_eval()
       data = function.Tuple(function.Tuple([fun, onto_f.simplified, function.Tuple(onto_ind)]) for onto_ind, onto_f in function.blocks(onto.prepare_eval()))
-      for ref, trans, opp in zip(self.references, self.transforms, self.opposites):
+      for ielem, (ref, trans, opp) in enumerate(zip(self.references, self.transforms, self.opposites)):
         points = ref.getpoints('bezier', 2)
-        for fun_, onto_f_, onto_ind_ in data.eval(function.Subsample(roots=self.roots, transforms=(trans, opp), points=points), **arguments or {}):
+        for fun_, onto_f_, onto_ind_ in data.eval(function.Subsample(roots=self.roots, transforms=(trans, opp), points=points, ielem=ielem), **arguments or {}):
           onto_f_ = onto_f_.swapaxes(0,1) # -> dof axis, point axis, ...
           indfun_ = fun_[(slice(None),)+numpy.ix_(*onto_ind_[1:])]
           assert onto_f_.shape[0] == len(onto_ind_[0])
@@ -380,7 +380,7 @@ class Topology(types.Singleton):
         bins[ielem].add(tail)
       fcache = cache.WrapperCache()
       with log.iter.percentage('trimming', self.references, self.transforms, bins) as items:
-        for ref, trans, ctransforms in items:
+        for ielem, (ref, trans, ctransforms) in enumerate(items):
           levels = numpy.empty(ref.nvertices_by_level(maxrefine))
           todims = tuple(t[-1].fromdims for t in trans)
           cover = list(fcache[ref.vertex_cover](frozenset(ctransforms), maxrefine, todims))
@@ -389,7 +389,7 @@ class Topology(types.Singleton):
           while mask.any():
             imax = numpy.argmax([mask[indices].sum() for tail, cpoints, indices in cover])
             tail, cpoints, indices = cover.pop(imax)
-            levels[indices] = levelset.eval(function.Subsample(roots=self.roots, transforms=(tuple(a+b for a, b in zip(trans, tail)),), points=points.CoordsPoints(cpoints)), **arguments)
+            levels[indices] = levelset.eval(function.Subsample(roots=self.roots, transforms=(tuple(a+b for a, b in zip(trans, tail)),), points=points.CoordsPoints(cpoints), ielem=ielem), **arguments)
             mask[indices] = False
           refs.append(ref.trim(levels, maxrefine=maxrefine, ndivisions=ndivisions))
       log.debug('cache', fcache.stats)
@@ -437,7 +437,7 @@ class Topology(types.Singleton):
     extractions = [[] for ifunc in range(len(funcs))]
 
     with log.iter.percentage('projecting', self.references, self.transforms, self.opposites) as items:
-      for ref, trans, opp in items:
+      for ielem, (ref, trans, opp) in enumerate(items):
 
         try:
           points, projector, basis = bases[ref]
@@ -450,7 +450,7 @@ class Topology(types.Singleton):
           projector = numpy.linalg.solve(A, basis.T * points.weights)
           bases[ref] = points, projector, basis
 
-        for ifunc, ind_val in enumerate(blocks.eval(function.Subsample(roots=self.roots, transforms=(trans, opp), points=points), **arguments)):
+        for ifunc, ind_val in enumerate(blocks.eval(function.Subsample(roots=self.roots, transforms=(trans, opp), points=points, ielem=ielem), **arguments)):
 
           if len(ind_val) == 1:
             (allind, sumval), = ind_val
@@ -581,7 +581,7 @@ class Topology(types.Singleton):
           w = p.weights
           xi = (numpy.dot(w,xi) / w.sum())[_] if len(xi) > 1 else xi.copy()
           for iiter in range(maxiter):
-            coord_xi, J_xi = geom_J.eval(function.Subsample(roots=self.roots, transforms=(self.transforms[ielem], self.opposites[ielem]), points=points.CoordsPoints(xi)), **arguments or {})
+            coord_xi, J_xi = geom_J.eval(function.Subsample(roots=self.roots, transforms=(self.transforms[ielem], self.opposites[ielem]), points=points.CoordsPoints(xi), ielem=ielem), **arguments or {})
             err = numpy.linalg.norm(coord - coord_xi)
             if err < tol:
               converged = True
@@ -1499,6 +1499,14 @@ class DisjointUnionTopology(Topology):
   @property
   def refined(self):
     return DisjointUnionTopology([topo.refined for topo in self._topos], self._names)
+
+  @property
+  def boundary(self):
+    return DisjointUnionTopology([topo.boundary for topo in self._topos])
+
+  @property
+  def interfaces(self):
+    return DisjointUnionTopology([topo.interfaces for topo in self._topos])
 
   def integral(self, func, ischeme='gauss', degree=None, edit=None):
     assert edit is None

@@ -106,7 +106,7 @@ class Sample(types.Singleton):
     return '{}<{}D, {} elems, {} points>'.format(type(self).__qualname__, self.ndims, self.nelems, self.npoints)
 
   def _prepare_funcs(self, funcs):
-    return [function.asarray(func).prepare_eval(ndims=self.ndims) for func in funcs]
+    return [function.asarray(func).prepare_eval(subsamples=self.subsamplemetas) for func in funcs]
 
   @util.positional_only
   @util.single_or_multiple
@@ -245,9 +245,9 @@ class Sample(types.Singleton):
     '''Basis-like function that for every point in the sample evaluates to the
     unit vector corresponding to its index.'''
 
-    index, head, tail = function.TransformsIndexWithTail(self.transforms[0], self.ndims, function.SelectChain(self.roots))
+    index, tail, linear = function.TransformsIndexWithTail(self.transforms[0], self.ndims, function.SelectChain(self.roots))
     I = function.Elemwise(self.index, index, dtype=int)
-    B = function.Sampled(function.ApplyTransforms(head, tail), expect=function.take(self.allcoords, I, axis=0))
+    B = function.Sampled(function.ApplyTransforms(tail, linear), expect=function.take(self.allcoords, I, axis=0))
     return function.Inflate(func=B, dofmap=I, length=self.npoints, axis=0)
 
   def asfunction(self, array):
@@ -321,7 +321,11 @@ class Sample(types.Singleton):
     return Sample(self.roots, self.ndims, transforms, points, map(numpy.arange, offset[:-1], offset[1:]))
 
   def getsubsamples(self, ielem):
-    return function.Subsample(roots=self.roots, transforms=tuple(t[ielem] for t in self.transforms), points=self.points[ielem]),
+    return function.Subsample(roots=self.roots, transforms=tuple(t[ielem] for t in self.transforms), points=self.points[ielem], ielem=ielem),
+
+  @property
+  def subsamplemetas(self):
+    return function.SubsampleMeta(roots=self.roots, ndimsnormal=sum(root.ndims for root in self.roots)-self.ndims, transforms=self.transforms),
 
 strictsample = types.strict[Sample]
 
@@ -340,6 +344,10 @@ class ProductSample(Sample):
   def getsubsamples(self, ielem):
     ielem1, ielem2 = divmod(ielem, self._sample2.nelems)
     return self._sample1.getsubsamples(ielem1) + self._sample2.getsubsamples(ielem2)
+
+  @property
+  def subsamplemetas(self):
+    return self._sample1.subsamplemetas + self._sample2.subsamplemetas
 
 class Integral(types.Singleton):
   '''Postponed integration.

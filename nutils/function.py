@@ -95,20 +95,24 @@ class Subsample:
   roots : :class:`tuple` of :class:`Root`
   transforms : :class:`tuple` of transform chains
   points : :class:`points.Points`
+  ielem : :class:`int`, optional
 
   Attributes
   ----------
   roots : :class:`tuple` of :class:`Root`
   transforms : :class:`tuple` of transform chains
   points : :class:`points.Points`
+  ielem : :class:`int` or ``None``
   '''
 
-  __slots__ = 'roots', 'transforms', 'points'
+  __slots__ = 'roots', 'transforms', 'points', 'ielem'
 
-  def __init__(self, roots: types.tuple[strictroot], transforms: types.tuple[transform.stricttransform], points: points.strictpoints):
+  @types.apply_annotations
+  def __init__(self, roots: types.tuple[strictroot], transforms: types.tuple[types.tuple[transform.stricttransform]], points: points.strictpoints, ielem: types.strictint = None):
     self.roots = roots
     self.transforms = transforms
     self.points = points
+    self.ielem = ielem
 
   @property
   def npoints(self):
@@ -123,7 +127,39 @@ class Subsample:
     return self.points.ndimsnormal
 
   @property
-  def ndimstangent(self):
+  def ndimsmanifold(self):
+    return self.ndims - self.ndimsnormal
+
+class SubsampleMeta:
+  '''Subsample meta information
+
+  Parameters
+  ----------
+  roots : :class:`tuple` of :class:`Root`
+  ndimsnormal : :class:`int`
+  transforms : :class:`tuple` of :class:`nutils.transformseq.Transformseq`, optional
+
+  Attributes
+  ----------
+  roots : :class:`tuple` of :class:`Root`
+  ndimsnormal : :class:`int`
+  transforms : :class:`tuple` of :class:`nutils.transformseq.Transformseq` or ``None``
+  '''
+
+  __slots__ = 'roots', 'ndimsnormal', 'transforms'
+
+  @types.apply_annotations
+  def __init__(self, roots:types.tuple[strictroot], ndimsnormal:types.strictint, transforms:types.tuple[transformseq.stricttransforms]=None):
+    self.roots = roots
+    self.ndimsnormal = ndimsnormal
+    self.transforms = transforms
+
+  @property
+  def ndims(self):
+    return builtins.sum(root.ndims for root in self.roots)
+
+  @property
+  def ndimsmanifold(self):
     return self.ndims - self.ndimsnormal
 
 isevaluable = lambda arg: isinstance(arg, Evaluable)
@@ -429,25 +465,11 @@ class SelectChain(TransformChain):
           break
       else:
         raise ValueError('no such root: {!r}'.format(root))
-    return tuple(trans), tuple(t[0].todims for t in trans), tuple(t[-1].fromdims for t in trans)
+    return tuple(trans)
 
   @util.positional_only
   def prepare_eval(self, *, opposite=False, kwargs=...):
     return SelectChain(self.ordered_roots, 1-self.n) if opposite else self
-
-class EmptyTransformChain(TransformChain):
-
-  __slots__ = '_todims', '_fromdims'
-
-  @types.apply_annotations
-  def __init__(self, roots:types.tuple[strictroot], todims:types.tuple[types.strictint], fromdims:types.tuple[types.strictint]):
-    assert len(roots) == len(todims) == len(fromdims)
-    self._todims = todims
-    self._fromdims = fromdims
-    super().__init__(roots=roots, args=[], todims=builtins.sum(todims), fromdims=builtins.sum(fromdims))
-
-  def evalf(self):
-    return ((),)*len(self.roots), self._todims, self._fromdims
 
 class TransformChainFromTuple(TransformChain):
 
@@ -476,12 +498,11 @@ class TransformsIndexWithTail(Evaluable):
   def roots(self):
     return self._trans.roots
 
-  def evalf(self, trans):
-    trans, todims, fromdims = trans
-    index, tail = self._transforms.index_with_tail(trans)
-    tailtodims = tuple(t[0].todims if t else n for n, t in zip(fromdims, tail))
+  def evalf(self, chains):
+    index, tails = self._transforms.index_with_tail(chains)
+    tailtodims = tuple(t[0].todims if t else c[-1].fromdims for t, c in zip(tails, chains))
     assert builtins.sum(tailtodims) == self._fromdims
-    return numpy.array(index)[None], (tail, tailtodims, fromdims)
+    return numpy.array(index)[None], tails
 
   def __len__(self):
     return 3
@@ -491,33 +512,25 @@ class TransformsIndexWithTail(Evaluable):
     return ArrayFromTuple(self, index=0, shape=(), dtype=int)
 
   @property
-  def head(self):
-    return GetTransform(self._trans.ordered_roots, self._transforms, self.index, self._fromdims)
-
-  @property
   def tail(self):
     return TransformChainFromTuple(self._trans.ordered_roots, self, index=1, todims=self._fromdims)
 
+  @property
+  def linear(self):
+    return Linear(self._trans.ordered_roots, self._transforms, self.index, self._fromdims)
+
   def __iter__(self):
     yield self.index
-    yield self.head
     yield self.tail
+    yield self.linear
 
-class GetTransform(TransformChain):
-
-  __slots__ = 'transforms', 'index'
-
-  @types.apply_annotations
-  def __init__(self, roots:types.tuple[strictroot], transforms:transformseq.stricttransforms, index:asarray, fromdims:types.strictint):
-    assert index.ndim == 0 and index.dtype == int
-    self.transforms = transforms
-    super().__init__(args=[index], roots=roots, fromdims=fromdims, todims=builtins.sum(root.ndims for root in roots))
-
-  def evalf(self, index):
-    index, = index
-    trans = self.transforms[index]
-    return trans, tuple(t[0].todims for t in trans), tuple(t[-1].fromdims for t in trans)
-
+# @util.positional_only
+# def prepare_eval(self, *, subsamples, kwargs=...):
+#   self = TransformsIndexWithTail(self._transforms, self._fromdims, self._trans.prepare_eval(subsamples=subsamples, **kwargs))
+#   for subsample in subsamples:
+#     if self._trans.ordered_roots == subsample.roots and isinstance(self._trans, SelectChain) and self._transforms == subsamples.transforms[self._trans.n]:
+#       return 
+#
 # ARRAYFUNC
 #
 # The main evaluable. Closely mimics a numpy array.
@@ -1278,18 +1291,19 @@ class Product(Array):
 
 class ApplyTransforms(Array):
 
-  __slots__ = '_head', '_tail'
+  __slots__ = '_tail', '_linear'
 
   @types.apply_annotations
-  def __init__(self, head:types.strict[TransformChain], tail:types.strict[TransformChain]):
-    assert head.roots == tail.roots
-    self._head = head
+  def __init__(self, tail:types.strict[TransformChain], linear:asarray):
+    assert linear.ndim == 2
+    assert tail.todims == linear.shape[1]
     self._tail = tail
-    super().__init__(args=[SUBSAMPLES, tail], shape=[self._tail.todims], dtype=float)
+    self._linear = linear
+    super().__init__(args=[SUBSAMPLES, tail], shape=[tail.todims], dtype=float)
 
   @property
   def roots(self):
-    return self._head.roots
+    return self._tail.roots
 
   def evalf(self, subsamples, chains):
     slices = {}
@@ -1304,7 +1318,7 @@ class ApplyTransforms(Array):
 
     result = numpy.zeros((*(subsample.npoints for subsample in subsamples), self.shape[0]), dtype=float)
     to0 = 0
-    for root, chain in zip(self._head.ordered_roots, chains[0]):
+    for root, chain in zip(self._tail.ordered_roots, chains):
       to1 = to0 + (chain[0].todims if chain else root.ndims)
       isubsample = isubsamples[root]
       expand = tuple(slice(None) if i == isubsample else numpy.newaxis for i in range(len(subsamples)))
@@ -1315,46 +1329,41 @@ class ApplyTransforms(Array):
 
   def _derivative(self, var, seen):
     if isinstance(var, RootCoords) and var.root in self.roots:
-      if self._head.fromdims != builtins.sum(root.ndims for root in self.roots):
+      if self._linear.shape[0] != self._linear.shape[1]:
         raise NotImplementedError('transform contains updims')
       to0 = 0
-      for root in self._head.ordered_roots:
+      for root in self._tail.ordered_roots:
         to1 = to0 + root.ndims
         if root == var.root:
-          return Inverse(Linear(self._head, self._head.fromdims))[:,to0:to1]
+          return Inverse(self._linear)[:,to0:to1]
         to0 = to1
       raise Exception
     return zeros(self.shape+var.shape)
 
 class Linear(Array):
 
-  __slots__ = '_trans'
-  __cache__ = 'simplified'
+  __slots__ = '_roots', '_transforms'
 
   @types.apply_annotations
-  def __init__(self, trans:types.strict[TransformChain], fromdims:types.strictint, todims:types.strictint=None):
-    self._trans = trans
-    super().__init__(args=[trans], shape=(todims or trans.todims, fromdims), dtype=float)
+  def __init__(self, roots:types.tuple[strictroot], transforms:transformseq.stricttransforms, index:asarray, fromdims:types.strictint):
+    assert frozenset(roots) == index.roots
+    self._roots = roots
+    self._transforms = transforms
+    super().__init__(args=[index], shape=(builtins.sum(root.ndims for root in roots), fromdims), dtype=float)
 
-  def evalf(self, chains):
-    result = numpy.zeros((1, *self.shape), dtype=float)
-    to0 = from0 = 0
-    for chain, todims, fromdims in zip(*chains):
-      to1, from1 = to0 + todims, from0 + fromdims
-      result[:,to0:to1,from0:from1] = transform.linear(chain, todims)
-      to0, from0 = to1, from1
-    assert (to0, from0) == self.shape
-    return result
+  def evalf(self, index):
+    index, = index
+    result = numpy.zeros(self.shape, dtype=float)
+    to1 = from1 = 0
+    for root, chain in zip(self._roots, self._transforms[index]):
+      assert chain[0].todims == root.ndims
+      to0, from0, to1, from1 = to1, from1, to1 + root.ndims, from1 + chain[-1].fromdims
+      result[to0:to1,from0:from1] = transform.linear(chain, root.ndims)
+    assert (to1, from1) == self.shape
+    return result[_]
 
   def _derivative(self, var, seen):
     return zeros(self.shape+var.shape)
-
-  @property
-  def simplified(self):
-    if isinstance(self._trans, EmptyTransformChain) and self._trans.todims == self._trans.fromdims:
-      return eye(self._trans.todims)
-    else:
-      return self
 
 class Inverse(Array):
   '''
@@ -1378,6 +1387,8 @@ class Inverse(Array):
     if retval is not None:
       assert retval.shape == self.shape
       return retval.simplified
+    if func.shape[-1] == func.shape[-2] == 1:
+      return (1 / func).simplified
     return Inverse(func)
 
   def evalf(self, arr):
@@ -1589,6 +1600,27 @@ class Concatenate(Array):
     if axis != self.axis:
       return Concatenate([Unravel(func, axis, shape) for func in self.funcs], self.axis+(self.axis>axis))
 
+  def _squareblockdiagonal(self):
+    if self.axis < self.ndim-2:
+      return None, None
+    sizes = tuple(func1.shape[self.axis] for func1 in self.funcs)
+    axis2 = self.ndim-1 if self.axis == self.ndim-2 else self.ndim-2
+    if not all(isinstance(func1, Concatenate) and func1.axis == axis2 and tuple(func2.shape[axis2] for func2 in func1.funcs) == sizes and all(iszero(func2) for j, func2 in enumerate(func1.funcs) if i != j) for i, func1 in enumerate(self.funcs)):
+      return None, None
+    return tuple(func1.funcs[i] for i, func1 in enumerate(self.funcs)), sizes
+
+  def _inverse(self):
+    blocks, sizes = self._squareblockdiagonal()
+    if blocks is None:
+      return
+    return concatenate([concatenate([inverse(b) if i == j else zeros((*self.shape[:-2], n, n), self.dtype) for j, n in enumerate(sizes)], self.ndim-2) for i, b in enumerate(blocks)], self.ndim-1)
+
+  def _determinant(self):
+    blocks, sizes = self._squareblockdiagonal()
+    if blocks is None:
+      return
+    return functools.reduce(operator.mul, map(determinant, blocks))
+
 class Interpolate(Array):
   'interpolate uniformly spaced data; stepwise for now'
 
@@ -1627,6 +1659,8 @@ class Determinant(Array):
     if retval is not None:
       assert retval.shape == self.shape
       return retval.simplified
+    if func.shape[-1] == func.shape[-2] == 1:
+      return func[...,0,0]
     return Determinant(func)
 
   def evalf(self, arr):
@@ -2915,9 +2949,16 @@ class DelayedJacobian(Array):
     return DelayedJacobian(self._geom, *self._derivativestack, var)
 
   @util.positional_only
-  def prepare_eval(self, *, ndims, kwargs=...):
-    jac = functools.reduce(derivative, self._derivativestack, asarray(jacobian(self._geom, ndims)))
-    return jac.prepare_eval(ndims=ndims, **kwargs)
+  def prepare_eval(self, *, subsamples, kwargs=...):
+    ndimsmanifold = 0
+    for subsample in subsamples:
+      if self.roots.isdisjoint(subsample.roots):
+        continue
+      if not frozenset(subsample.roots) <= self.roots:
+        raise ValueError('Cannot compute jacobian.')
+      ndimsmanifold += subsample.ndimsmanifold
+    jac = functools.reduce(derivative, self._derivativestack, asarray(jacobian(self._geom, ndimsmanifold)))
+    return jac.prepare_eval(subsamples=subsamples, **kwargs)
 
 class Ravel(Array):
 
@@ -3415,8 +3456,8 @@ class Basis(Array):
     self.transforms = transforms
     self.ndimsdomain = ndims
 
-    self._index, head, tail = TransformsIndexWithTail(self.transforms, ndims, trans)
-    self._points = ApplyTransforms(head, tail)
+    self._index, tail, linear = TransformsIndexWithTail(self.transforms, ndims, trans)
+    self._points = ApplyTransforms(tail, linear)
     self._trans = trans
     super().__init__(args=(self._index, self._points), shape=(ndofs,), dtype=float)
 
@@ -4123,10 +4164,9 @@ def blocks(arg):
 
 def rootcoords(roots):
   if isinstance(roots, Root):
-    roots = roots,
+    return ApplyTransforms(SelectChain((roots,)), eye(roots.ndims))
   else:
-    roots = tuple(roots)
-  return ApplyTransforms(EmptyTransformChain(roots=roots, todims=tuple(root.ndims for root in roots), fromdims=tuple(root.ndims for root in roots)), SelectChain(roots))
+    return concatenate([rootcoords(root) for root in roots], axis=0)
 
 def opposite(arg):
   return Opposite(arg)

@@ -47,7 +47,7 @@ class check(TestCase):
         self.fail('arrays are not equal.\nACTUAL : {}\nDESIRED: {}'.format(decimal, *(numpy.array2string(a, prefix='ACTUAL : ') for a in (actual, desired))))
 
   def assertFunctionAlmostEqual(self, actual, desired, decimal):
-    subsample = function.Subsample(roots=self.sample.roots, transforms=[trans[0] for trans in self.sample.transforms], points=self.sample.points[0])
+    subsample = function.Subsample(roots=self.sample.roots, transforms=[trans[0] for trans in self.sample.transforms], points=self.sample.points[0], ielem=0)
     with self.subTest('vanilla'):
       self.assertArrayAlmostEqual(actual.eval(subsample), desired, decimal)
     with self.subTest('simplified'):
@@ -274,10 +274,10 @@ class check(TestCase):
     target = target.reshape(-1, target.shape[-1])
     xi = xi0.reshape(-1, xi0.shape[-1])
     while countdown:
-      err = target - self.geom.prepare_eval().eval(function.Subsample(roots=self.sample.roots, transforms=[elemtrans], points=CoordsPoints(xi)))
+      err = target - self.geom.prepare_eval().eval(function.Subsample(roots=self.sample.roots, transforms=[elemtrans], points=CoordsPoints(xi), ielem=0))
       if numpy.less(numpy.abs(err), 1e-12).all():
         countdown -= 1
-      dxi_root = (Jinv.eval(function.Subsample(roots=self.sample.roots, transforms=[elemtrans], points=CoordsPoints(xi))) * err[...,_,:]).sum(-1)
+      dxi_root = (Jinv.eval(function.Subsample(roots=self.sample.roots, transforms=[elemtrans], points=CoordsPoints(xi), ielem=0)) * err[...,_,:]).sum(-1)
       #xi = xi + numpy.dot(dxi_root, self.elem.inv_root_transform.T)
       xi = xi + dxi_root
       iiter += 1
@@ -296,7 +296,7 @@ class check(TestCase):
     eps = 1e-5
     while not numpy.all(good):
       fdpoints = points[_,_,:,:] + D[:,:,_,:] * eps
-      tmp = self.n_op(*argsfun.eval(function.Subsample(roots=self.sample.roots, transforms=[elemtrans], points=CoordsPoints(fdpoints.reshape(-1,fdpoints.shape[-1])))))
+      tmp = self.n_op(*argsfun.eval(function.Subsample(roots=self.sample.roots, transforms=[elemtrans], points=CoordsPoints(fdpoints.reshape(-1,fdpoints.shape[-1])), ielem=0)))
       if len(tmp) == 1 or tmp.dtype.kind in 'bi' or self.zerograd:
         error = exact
       else:
@@ -335,7 +335,7 @@ class check(TestCase):
     eps = 1e-4
     while not numpy.all(good):
       fdpoints = self.find(self.sample.eval(self.geom)[_,_,:,:] + D[:,:,_,:] * eps, points[_,_,:,:])
-      tmp = self.n_op(*argsfun.eval(function.Subsample(roots=self.sample.roots, transforms=[elemtrans], points=CoordsPoints(fdpoints.reshape(-1,fdpoints.shape[-1])))))
+      tmp = self.n_op(*argsfun.eval(function.Subsample(roots=self.sample.roots, transforms=[elemtrans], points=CoordsPoints(fdpoints.reshape(-1,fdpoints.shape[-1])), ielem=0)))
       if len(tmp) == 1 or tmp.dtype.kind in 'bi' or self.zerograd:
         error = exact
       else:
@@ -362,7 +362,7 @@ class check(TestCase):
     eps = 1e-4
     while not numpy.all(good):
       fdpoints = self.find(self.sample.eval(self.geom)[_,_,_,_,:,:] + DD[:,:,:,:,_,:] * eps, points[_,_,_,_,:,:])
-      tmp = self.n_op(*argsfun.eval(function.Subsample(roots=self.sample.roots, transforms=[elemtrans], points=CoordsPoints(fdpoints.reshape(-1,fdpoints.shape[-1])))))
+      tmp = self.n_op(*argsfun.eval(function.Subsample(roots=self.sample.roots, transforms=[elemtrans], points=CoordsPoints(fdpoints.reshape(-1,fdpoints.shape[-1])), ielem=0)))
       if len(tmp) == 1 or tmp.dtype.kind in 'bi' or self.zerograd:
         error = exact
       else:
@@ -551,12 +551,12 @@ class elemwise(TestCase):
   def test_evalf(self):
     for i, (ref, trans) in enumerate(zip(self.domain.references, self.domain.transforms)):
       with self.subTest(i=i):
-        numpy.testing.assert_array_almost_equal(self.func.prepare_eval().eval(function.Subsample(roots=self.domain.roots, transforms=(trans,), points=ref.getpoints('gauss', 1))), self.data[i][_])
+        numpy.testing.assert_array_almost_equal(self.func.prepare_eval().eval(function.Subsample(roots=self.domain.roots, transforms=(trans,), points=ref.getpoints('gauss', 1)), ielem=i), self.data[i][_])
 
   def test_shape(self):
     for i, (ref, trans) in enumerate(zip(self.domain.references, self.domain.transforms)):
       with self.subTest(i=i):
-        self.assertEqual(self.func.size.prepare_eval().eval(function.Subsample(roots=self.domain.roots, transforms=(trans,), points=ref.getpoints('gauss', 1)))[0], self.data[i].size)
+        self.assertEqual(self.func.size.prepare_eval().eval(function.Subsample(roots=self.domain.roots, transforms=(trans,), points=ref.getpoints('gauss', 1), ielem=i))[0], self.data[i].size)
 
   def test_derivative(self):
     self.assertTrue(function.iszero(function.rootgradient(self.func, self.domain.roots)))
@@ -980,7 +980,7 @@ class CommonBasis:
     with _builtin_warnings.catch_warnings():
       _builtin_warnings.simplefilter('ignore', category=function.ExpensiveEvaluationWarning)
       for ielem in range(self.checknelems):
-        value = simplified.prepare_eval().eval(function.Subsample(roots=self.roots, transforms=(self.basis.transforms[ielem],), points=points))
+        value = simplified.prepare_eval().eval(function.Subsample(roots=self.roots, transforms=(self.basis.transforms[ielem],), points=points, ielem=ielem))
         if value.shape[0] == 1:
           value = numpy.tile(value, (points.npoints, 1))
         self.assertEqual(value.tolist(), self.checkeval(ielem, points.coords))

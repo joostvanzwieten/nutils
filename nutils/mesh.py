@@ -792,7 +792,6 @@ def unitsquare(nelems, etype):
 
   if etype == 'square':
     topo, geom = newrectilinear([nelems]*2)
-    #return topo, geom/nelems
 
   elif etype in ('triangle', 'mixed'):
     root = function.Root('unitsquare', 2)
