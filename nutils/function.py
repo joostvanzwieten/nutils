@@ -123,12 +123,12 @@ class Subsample:
     return builtins.sum(root.ndims for root in self.roots)
 
   @property
-  def ndimsnormal(self):
-    return self.points.ndimsnormal
+  def ndimsmanifold(self):
+    return self.points.ndimsmanifold
 
   @property
-  def ndimsmanifold(self):
-    return self.ndims - self.ndimsnormal
+  def ndimsnormal(self):
+    return self.ndims - self.ndimsmanifold
 
 class SubsampleMeta:
   '''Subsample meta information
@@ -537,8 +537,11 @@ class TransformChainFromTransformsIndexWithTail(TransformChain):
     return tail
 
   @util.positional_only
-  def prepare_eval(self, *, subsamples, kwargs=...):
-    self = TransformChainFromTransformsIndexWithTail(self._indextail.prepare_eval(subsamples=subsamples, **kwargs))
+  def prepare_eval(self, *, kwargs=...):
+    self = TransformChainFromTransformsIndexWithTail(self._indextail.prepare_eval(**kwargs))
+    if 'subsamples' not in kwargs:
+      return self
+    subsamples = kwargs['subsamples']
     trans = self._indextail.trans
     if isinstance(trans, SelectChain):
       for isubsample, subsample in enumerate(subsamples):
@@ -1334,7 +1337,7 @@ class ApplyTransforms(Array):
     result = numpy.zeros((*(subsample.npoints for subsample in subsamples), self.shape[0]), dtype=float)
     to0 = 0
     for root, chain in zip(self._tail.ordered_roots, chains):
-      to1 = to0 + (chain[0].todims if chain else root.ndims)
+      to1 = to0 + (chain[0].todims if chain else slices[root].stop - slices[root].start)
       isubsample = isubsamples[root]
       expand = tuple(slice(None) if i == isubsample else numpy.newaxis for i in range(len(subsamples)))
       result[...,to0:to1] = transform.apply(chain, subsamples[isubsample].points.coords[:,slices[root]])[expand]
@@ -2455,8 +2458,11 @@ class IndexFromTransformsIndexWithTail(Array):
     return numpy.array([index], int)
 
   @util.positional_only
-  def prepare_eval(self, *, subsamples, kwargs=...):
-    self = IndexFromTransformsIndexWithTail(self._indextail.prepare_eval(subsamples=subsamples, **kwargs))
+  def prepare_eval(self, *, kwargs=...):
+    self = IndexFromTransformsIndexWithTail(self._indextail.prepare_eval(**kwargs))
+    if 'subsamples' not in kwargs:
+      return self
+    subsamples = kwargs['subsamples']
     trans = self._indextail.trans
     if isinstance(trans, SelectChain):
       for isubsample, subsample in enumerate(subsamples):
