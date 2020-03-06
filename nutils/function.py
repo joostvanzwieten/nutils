@@ -94,14 +94,14 @@ class Subsample:
   ----------
   roots : :class:`tuple` of :class:`Root`
   transforms : :class:`tuple` of transform chains
-  points : :class:`points.Points`
+  points : :class:`~nutils.points.Points`
   ielem : :class:`int`, optional
 
   Attributes
   ----------
   roots : :class:`tuple` of :class:`Root`
   transforms : :class:`tuple` of transform chains
-  points : :class:`points.Points`
+  points : :class:`~nutils.points.Points`
   ielem : :class:`int` or ``None``
   '''
 
@@ -137,13 +137,13 @@ class SubsampleMeta:
   ----------
   roots : :class:`tuple` of :class:`Root`
   ndimsnormal : :class:`int`
-  transforms : :class:`tuple` of :class:`nutils.transformseq.Transformseq`, optional
+  transforms : :class:`tuple` of :class:`~nutils.transformseq.Transforms`, optional
 
   Attributes
   ----------
   roots : :class:`tuple` of :class:`Root`
   ndimsnormal : :class:`int`
-  transforms : :class:`tuple` of :class:`nutils.transformseq.Transformseq` or ``None``
+  transforms : :class:`tuple` of :class:`~nutils.transformseq.Transforms` or ``None``
   '''
 
   __slots__ = 'roots', 'ndimsnormal', 'transforms'

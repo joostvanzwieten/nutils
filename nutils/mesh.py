@@ -48,7 +48,9 @@ def line(nodes, periodic=False, bnames=None, *, rootid='line'):
   geom = function.rootcoords(root) * scale + offset if uniform else domain.basis('std', degree=1, periodic=[]).dot(nodes)[_]
   return domain, geom
 
+@log.withcontext
 def rectilinear(nodes, periodic=None, bnames=[['left','right'],['bottom','top'],['front','back']], rootnames='XYZABX'):
+  'rectilinear mesh'
   if periodic is None:
     periodic = []
   domains, geoms = zip(*(line(nodesi, idim in periodic, bnamesi, rootid=rootid) for idim, (nodesi, bnamesi, rootid) in enumerate(zip(nodes, tuple(bnames)+(None,)*len(nodes), rootnames))))

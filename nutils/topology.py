@@ -1993,6 +1993,9 @@ class ProductTopology(Topology):
                      transforms=left.transforms*right.transforms,
                      opposites=(left.opposites if leftopp else left.transforms)*(right.opposites if rightopp else right.transforms))
 
+  def __repr__(self):
+    return '{!r}*{!r}'.format(self._left, self._right)
+
   @property
   def shape(self):
     return self._left.shape + self._right.shape
