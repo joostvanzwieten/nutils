@@ -792,7 +792,9 @@ class WithGroupsTopology(Topology):
       if isinstance(topo, Topology):
         # last minute orientation fix
         s = []
-        for transs in zip(topo.transforms, topo.opposites):
+        for ref, *transs in zip(topo.references, topo.transforms, topo.opposites):
+          if not ref:
+            continue
           for trans in transs:
             try:
               s.append(baseitopo.transforms.index(trans))
@@ -1641,6 +1643,26 @@ class RefinedTopology(Topology):
     return self.basetopo.boundary.refined
 
   @property
+  def interfaces(self):
+    references = []
+    transforms = []
+    opposites = []
+    for ref, trans in zip(self.basetopo.references, self.basetopo.transforms):
+      for ichild, (childconn, (ctrans, cref)) in enumerate(zip(ref.connectivity, ref.children)):
+        for iedge, (ioppchild, (etrans, eref)) in enumerate(zip(childconn, cref.edges)):
+          if ioppchild >= 0:
+            references.append(eref)
+            transforms.append(trans+(ctrans,etrans))
+            ioppedge = ref.connectivity[ioppchild].index(ichild)
+            oppctrans, oppcref = ref.children[ioppchild]
+            oppetrans = oppcref.edge_transforms[ioppedge]
+            opposites.append(trans+(oppctrans,oppetrans))
+    newifaces = Topology(elementseq.asreferences(references, self.ndims-1),
+                         transformseq.PlainTransforms(transforms, self.ndims-1),
+                         transformseq.PlainTransforms(opposites, self.ndims-1))
+    return DisjointUnionTopology([self.basetopo.interfaces.refined, newifaces])
+
+  @property
   def connectivity(self):
     offsets = numpy.cumsum([0] + [ref.nchildren for ref in self.basetopo.references])
     connectivity = [offset + edges for offset, ref in zip(offsets, self.basetopo.references) for edges in ref.connectivity]
@@ -2055,7 +2077,7 @@ class WithIdentifierTopology(Topology):
 class PartitionedTopology(DisjointUnionTopology):
 
   __slots__ = 'basetopo', 'refs', 'names', 'nparts', '_parts'
-  __cache__ = 'boundary', 'interfaces'
+  __cache__ = 'boundary', 'interfaces', 'refined'
 
   @types.apply_annotations
   def __init__(self, basetopo:stricttopology, refs:types.tuple[types.tuple[element.strictreference]], names:types.tuple[types.strictstr]):
@@ -2178,6 +2200,17 @@ class PartitionedTopology(DisjointUnionTopology):
     else:
       return super().__sub__(other)
 
+  @property
+  def refined(self):
+    refbasetopo = self.basetopo.refined
+    refbindex = refbasetopo.transforms.index
+    refinedrefs = [crefs for refs in self.refs for crefs in zip(*(ref.child_refs for ref in refs))]
+    indices = numpy.argsort([refbindex(trans+(ctrans,))
+                             for trans, ref in zip(self.basetopo.transforms, self.references)
+                             for ctrans in ref.child_transforms])
+    refinedrefs = tuple(map(refinedrefs.__getitem__, indices))
+    return PartitionedTopology(refbasetopo, refinedrefs, self.names)
+
 class _SubsetOfPartitionedTopology(DisjointUnionTopology):
 
   __slots__ = '_partition', '_names'
@@ -2259,6 +2292,10 @@ class _SubsetOfPartitionedTopology(DisjointUnionTopology):
         return EmptyTopology(self.ndims)
     else:
       return super().__rsub__(other)
+
+  @property
+  def refined(self):
+    return _SubsetOfPartitionedTopology(self._partition.refined, self._names)
 
 class PatchBoundary(types.Singleton):
 
