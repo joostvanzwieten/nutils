@@ -38,6 +38,7 @@ jobs:
       - name: Upload coverage
         uses: codecov/codecov-action@v1
         with:
+          name: ${{ matrix.os }}, Py${{ matrix.python-version }}
           fail_ci_if_error: true
   test-old-numpy:
     name: 'ubuntu-latest, Py3.6, Numpy 1.12'
@@ -60,4 +61,5 @@ jobs:
       - name: Upload coverage
         uses: codecov/codecov-action@v1
         with:
+          name: 'ubuntu-latest, Py3.6, Numpy 1.12'
           fail_ci_if_error: true
