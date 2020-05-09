@@ -1,5 +1,5 @@
 import numpy, itertools, pickle, warnings as _builtin_warnings
-from nutils import function, mesh, transformseq, transform, element, types
+from nutils import function, mesh, transformseq, transform, element, types, evaluable
 from nutils.testing import *
 
 class namespace(TestCase):
@@ -383,7 +383,7 @@ class CommonBasis:
   def test_evalf(self):
     ref = element.PointReference() if self.basis.coords.shape[0] == 0 else element.LineReference()**self.basis.coords.shape[0]
     points = ref.getpoints('bezier', 4).coords
-    with self.assertWarnsRegex(function.ExpensiveEvaluationWarning, 'using explicit basis evaluation.*'):
+    with self.assertWarnsRegex(evaluable.ExpensiveEvaluationWarning, 'using explicit basis evaluation.*'):
       for ielem in range(self.checknelems):
         self.assertEqual(self.basis.evalf([ielem], points).tolist(), self.checkeval(ielem, points))
 
@@ -392,7 +392,7 @@ class CommonBasis:
     points = ref.getpoints('bezier', 4).coords
     simplified = self.basis.simplified
     with _builtin_warnings.catch_warnings():
-      _builtin_warnings.simplefilter('ignore', category=function.ExpensiveEvaluationWarning)
+      _builtin_warnings.simplefilter('ignore', category=evaluable.ExpensiveEvaluationWarning)
       for ielem in range(self.checknelems):
         value = simplified.prepare_eval().eval(_transforms=(self.checktransforms[ielem],), _points=points)
         if value.shape[0] == 1:

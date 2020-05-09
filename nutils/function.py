@@ -22,7 +22,123 @@
 Function module.
 """
 
-from .evaluable import *
+from . import evaluable, types, expression, util, numeric, warnings
+from .evaluable import Array, asarray, replace, TransformsIndexWithTail, ApplyTransforms, TRANS, Inflate, Polyval, ElemwiseFromCallable, Elemwise, Range
+import abc, re, inspect, operator, types as builtin_types, numpy, itertools, functools
+
+Argument = evaluable.Argument
+Constant = evaluable.Constant
+simplified = evaluable.simplified
+
+# FUNCTIONS
+
+add = evaluable.add
+multiply = evaluable.multiply
+sum = evaluable.sum
+product = evaluable.product
+power = evaluable.power
+dot = evaluable.dot
+transpose = evaluable.transpose
+swapaxes = evaluable.swapaxes
+isarray = evaluable.isarray
+iszero = evaluable.iszero
+zeros = evaluable.zeros
+zeros_like = evaluable.zeros_like
+ones = evaluable.ones
+ones_like = evaluable.ones_like
+reciprocal = evaluable.reciprocal
+grad = evaluable.grad
+symgrad = evaluable.symgrad
+div = evaluable.div
+negative = evaluable.negative
+nsymgrad = evaluable.nsymgrad
+ngrad = evaluable.ngrad
+sin = evaluable.sin
+cos = evaluable.cos
+rotmat = evaluable.rotmat
+tan = evaluable.tan
+arcsin = evaluable.arcsin
+arccos = evaluable.arccos
+arctan = evaluable.arctan
+exp = evaluable.exp
+ln = evaluable.ln
+mod = evaluable.mod
+log2 = evaluable.log2
+log10 = evaluable.log10
+sqrt = evaluable.sqrt
+arctan2 = evaluable.arctan2
+greater = evaluable.greater
+equal = evaluable.equal
+less = evaluable.less
+min = evaluable.min
+max = evaluable.max
+abs = evaluable.abs
+sinh = evaluable.sinh
+cosh = evaluable.cosh
+tanh = evaluable.tanh
+arctanh = evaluable.arctanh
+piecewise = evaluable.piecewise
+partition = evaluable.partition
+trace = evaluable.trace
+normalized = evaluable.normalized
+norm2 = evaluable.norm2
+heaviside = evaluable.heaviside
+divide = evaluable.divide
+subtract = evaluable.subtract
+mean = evaluable.mean
+jump = evaluable.jump
+add_T = evaluable.add_T
+blocks = evaluable.blocks
+rootcoords = evaluable.rootcoords
+opposite = evaluable.opposite
+bifurcate1 = evaluable.bifurcate1
+bifurcate2 = evaluable.bifurcate2
+bifurcate = evaluable.bifurcate
+curvature = evaluable.curvature
+laplace = evaluable.laplace
+symgrad = evaluable.symgrad
+div = evaluable.div
+tangent = evaluable.tangent
+ngrad = evaluable.ngrad
+nsymgrad = evaluable.nsymgrad
+expand_dims = evaluable.expand_dims
+trignormal = evaluable.trignormal
+trigtangent = evaluable.trigtangent
+eye = evaluable.eye
+insertaxis = evaluable.insertaxis
+stack = evaluable.stack
+chain = evaluable.chain
+vectorize = evaluable.vectorize
+repeat = evaluable.repeat
+get = evaluable.get
+jacobian = evaluable.jacobian
+matmat = evaluable.matmat
+determinant = evaluable.determinant
+inverse = evaluable.inverse
+takediag = evaluable.takediag
+derivative = evaluable.derivative
+localgradient = evaluable.localgradient
+dotnorm = evaluable.dotnorm
+normal = evaluable.normal
+kronecker = evaluable.kronecker
+diagonalize = evaluable.diagonalize
+concatenate = evaluable.concatenate
+cross = evaluable.cross
+outer = evaluable.outer
+sign = evaluable.sign
+eig = evaluable.eig
+elemwise = evaluable.elemwise
+take = evaluable.take
+find = evaluable.find
+mask = evaluable.mask
+J = evaluable.J
+unravel = evaluable.unravel
+ravel = evaluable.ravel
+normal = evaluable.normal
+grad = evaluable.grad
+dotnorm = evaluable.dotnorm
+RevolutionAngle = evaluable.RevolutionAngle
+Sampled = evaluable.Sampled
 
 # BASES
 
@@ -58,7 +174,7 @@ class Basis(Array):
     super().__init__(args=(index, coords), shape=(ndofs,), dtype=float)
 
   def evalf(self, index, coords):
-    warnings.warn('using explicit basis evaluation; this is usually a bug.', ExpensiveEvaluationWarning)
+    warnings.warn('using explicit basis evaluation; this is usually a bug.', evaluable.ExpensiveEvaluationWarning)
     index, = index
     values = numeric.poly_eval(self.get_coefficients(index)[None], coords)
     inflated = numpy.zeros((coords.shape[0], self.ndofs), float)
@@ -837,3 +953,4 @@ class Namespace:
       raise ValueError('`expression @ Namespace` cannot be used because the expression has more than one dimension.  Use `Namespace.eval_...(expression)` instead')
     return _eval_ast(ast, self._functions)
 
+# vim:sw=2:sts=2:et

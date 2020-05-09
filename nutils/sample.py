@@ -43,7 +43,7 @@ multiple integrals simultaneously, which has the advantage that it can
 efficiently combine common substructures.
 '''
 
-from . import types, points, util, function, parallel, numeric, matrix, transformseq, sparse
+from . import types, points, util, function, parallel, numeric, matrix, transformseq, sparse, evaluable
 from .pointsseq import PointsSequence
 import numpy, numbers, collections.abc, os, treelog as log, abc
 
@@ -176,14 +176,14 @@ class Sample(types.Singleton):
     # argument id, evaluable index, and evaluable values.
 
     funcs = self._prepare_funcs(funcs)
-    blocks = [(ifunc, function.Tuple(ind), f.simplified.optimized_for_numpy) for ifunc, func in enumerate(funcs) for ind, f in function.blocks(func)]
+    blocks = [(ifunc, evaluable.Tuple(ind), f.simplified.optimized_for_numpy) for ifunc, func in enumerate(funcs) for ind, f in evaluable.blocks(func)]
     block2func, indices, values = zip(*blocks) if blocks else ([],[],[])
 
     log.debug('integrating {} distinct blocks'.format('+'.join(
       str(block2func.count(ifunc)) for ifunc in range(len(funcs)))))
 
     if graphviz:
-      function.Tuple(values).graphviz(graphviz)
+      evaluable.Tuple(values).graphviz(graphviz)
 
     # To allocate (shared) memory for all block data we evaluate indexfunc to
     # build an nblocks x nelems+1 offset array, and nblocks index lists of
@@ -191,7 +191,7 @@ class Sample(types.Singleton):
 
     offsets = numpy.zeros((len(blocks), self.nelems+1), dtype=int)
     if blocks:
-      sizefunc = function.stack([f.size for ifunc, ind, f in blocks]).simplified
+      sizefunc = evaluable.stack([f.size for ifunc, ind, f in blocks]).simplified
       for ielem, transforms in enumerate(zip(*self.transforms)):
         n, = sizefunc.eval(_transforms=transforms, **arguments)
         offsets[:,ielem+1] = offsets[:,ielem] + n
@@ -210,7 +210,7 @@ class Sample(types.Singleton):
     # element has its own location so no locks are required.
 
     datas = [parallel.shempty(n, dtype=sparse.dtype(funcs[ifunc].shape)) for ifunc, n in enumerate(nvals)]
-    valueindexfunc = function.Tuple(function.Tuple([value]+list(index)) for value, index in zip(values, indices))
+    valueindexfunc = evaluable.Tuple(evaluable.Tuple([value]+list(index)) for value, index in zip(values, indices))
     with parallel.ctxrange('integrating', self.nelems) as ielems:
       for ielem in ielems:
         points = self.points[ielem]
@@ -249,7 +249,7 @@ class Sample(types.Singleton):
 
     funcs = self._prepare_funcs(funcs)
     retvals = [parallel.shzeros((self.npoints,)+func.shape, dtype=func.dtype) for func in funcs]
-    idata = function.Tuple(function.Tuple([ifunc, function.Tuple(ind), f.simplified.optimized_for_numpy]) for ifunc, func in enumerate(funcs) for ind, f in function.blocks(func))
+    idata = evaluable.Tuple(evaluable.Tuple([ifunc, evaluable.Tuple(ind), f.simplified.optimized_for_numpy]) for ifunc, func in enumerate(funcs) for ind, f in evaluable.blocks(func))
 
     if graphviz:
       idata.graphviz(graphviz)
@@ -533,7 +533,7 @@ class Integral(types.Singleton):
   def _argshape(self, name):
     assert isinstance(name, str)
     shapes = {func.shape[:func.ndim-func._nderiv]
-      for func in function.Tuple(self._integrands.values()).dependencies
+      for func in evaluable.Tuple(self._integrands.values()).dependencies
         if isinstance(func, function.Argument) and func._name == name}
     if not shapes:
       raise KeyError(name)

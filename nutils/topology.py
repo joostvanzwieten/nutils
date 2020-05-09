@@ -34,7 +34,7 @@ out in element loops. For lower level operations topologies can be used as
 :mod:`nutils.element` iterators.
 """
 
-from . import element, function, util, parallel, numeric, cache, transform, transformseq, warnings, matrix, types, points
+from . import element, function, util, parallel, numeric, cache, transform, transformseq, warnings, matrix, types, points, evaluable
 from .sample import Sample
 from .elementseq import References
 from .pointsseq import PointsSequence
@@ -309,7 +309,7 @@ class Topology(types.Singleton):
       W = numpy.zeros(onto.shape[0])
       I = numpy.zeros(onto.shape[0], dtype=bool)
       fun = function.asarray(fun).prepare_eval()
-      data = function.Tuple(function.Tuple([fun, onto_f.simplified, function.Tuple(onto_ind)]) for onto_ind, onto_f in function.blocks(onto.prepare_eval()))
+      data = evaluable.Tuple(evaluable.Tuple([fun, onto_f.simplified, evaluable.Tuple(onto_ind)]) for onto_ind, onto_f in function.blocks(onto.prepare_eval()))
       for ref, trans, opp in zip(self.references, self.transforms, self.opposites):
         ipoints, iweights = ref.getischeme('bezier2')
         for fun_, onto_f_, onto_ind_ in data.eval(_transforms=(trans, opp), _points=ipoints, **arguments or {}):
@@ -439,7 +439,7 @@ class Topology(types.Singleton):
       subtopo = self[subtopo]
     values = numpy.zeros([len(self)], dtype=int)
     values[numpy.fromiter(map(self.transforms.index, subtopo.transforms), dtype=int)] = 1
-    return function.Get(values, axis=0, item=self.f_index)
+    return function.get(values, 0, item=self.f_index)
 
   def select(self, indicator, ischeme='bezier2', **kwargs):
     sample = self.sample(*element.parse_legacy_ischeme(ischeme))
@@ -512,7 +512,7 @@ class Topology(types.Singleton):
     ielems = parallel.shempty(len(coords), dtype=int)
     xis = parallel.shempty((len(coords),len(geom)), dtype=float)
     J = function.localgradient(geom, self.ndims)
-    geom_J = function.Tuple((geom, J)).prepare_eval().simplified
+    geom_J = evaluable.Tuple((geom.prepare_eval(), J.prepare_eval())).simplified
     with parallel.ctxrange('locating', len(coords)) as ipoints:
       for ipoint in ipoints:
         coord = coords[ipoint]
