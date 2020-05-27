@@ -420,71 +420,6 @@ class TransformsIndexWithTail(Evaluable):
 #
 # The main evaluable. Closely mimics a numpy array.
 
-def add(a, b):
-  a, b = _numpy_align(a, b)
-  return Add([a, b])
-
-def multiply(a, b):
-  a, b = _numpy_align(a, b)
-  return Multiply([a, b])
-
-def sum(arg, axis=None):
-  '''Sum array elements over a given axis.'''
-
-  arg = asarray(arg)
-  if axis is None:
-    axis = numpy.arange(arg.ndim)
-  elif numeric.isint(axis):
-    axis = numeric.normdim(arg.ndim, axis),
-  else:
-    axis = _norm_and_sort(arg.ndim, axis)
-    assert numpy.greater(numpy.diff(axis), 0).all(), 'duplicate axes in sum'
-  summed = arg
-  for ax in reversed(axis):
-    summed = Sum(summed, ax)
-  return summed
-
-def product(arg, axis):
-  arg = asarray(arg)
-  axis = numeric.normdim(arg.ndim, axis)
-  shape = arg.shape[:axis] + arg.shape[axis+1:]
-  trans = [i for i in range(arg.ndim) if i != axis] + [axis]
-  return Product(transpose(arg, trans))
-
-def power(arg, n):
-  arg, n = _numpy_align(arg, n)
-  return Power(arg, n)
-
-def dot(a, b, axes=None):
-  '''
-  Contract ``a`` and ``b`` along ``axes``.
-  '''
-  if axes is None:
-    a = asarray(a)
-    b = asarray(b)
-    assert b.ndim == 1 and b.shape[0] == a.shape[0]
-    for idim in range(1, a.ndim):
-      b = insertaxis(b, idim, a.shape[idim])
-    axes = 0,
-  else:
-    a, b = _numpy_align(a, b)
-  return multiply(a, b).sum(axes)
-
-def transpose(arg, trans=None):
-  arg = asarray(arg)
-  if trans is None:
-    normtrans = range(arg.ndim-1, -1, -1)
-  else:
-    normtrans = _normdims(arg.ndim, trans)
-    assert sorted(normtrans) == list(range(arg.ndim))
-  return Transpose(arg, normtrans)
-
-def swapaxes(arg, axis1, axis2):
-  arg = asarray(arg)
-  trans = numpy.arange(arg.ndim)
-  trans[axis1], trans[axis2] = trans[axis2], trans[axis1]
-  return transpose(arg, trans)
-
 class Array(Evaluable):
   '''
   Base class for array valued functions.
@@ -558,27 +493,27 @@ class Array(Evaluable):
   size = property(lambda self: util.product(self.shape) if self.ndim else 1)
   T = property(lambda self: transpose(self))
 
-  __add__ = __radd__ = add
+  __add__ = __radd__ = lambda self, other: add(self, other)
   __sub__ = lambda self, other: subtract(self, other)
   __rsub__ = lambda self, other: subtract(other, self)
-  __mul__ = __rmul__ = multiply
+  __mul__ = __rmul__ = lambda self, other: multiply(self, other)
   __truediv__ = lambda self, other: divide(self, other)
   __rtruediv__ = lambda self, other: divide(other, self)
   __pos__ = lambda self: self
   __neg__ = lambda self: negative(self)
-  __pow__ = power
+  __pow__ = lambda self, other: power(self, other)
   __abs__ = lambda self: abs(self)
   __mod__  = lambda self, other: mod(self, other)
   __str__ = __repr__ = lambda self: 'Array<{}>'.format(','.join(map(str, self.shape)) if hasattr(self, 'shape') else '?')
 
-  sum = sum
-  prod = product
-  dot = dot
+  sum = lambda self, axis=None: sum(self, axis=axis)
+  prod = lambda self, axis: product(self, axis)
+  dot = lambda self, other, axes=None: dot(self, other, axes=axes)
   normalized = lambda self, axis=-1: normalized(self, axis)
   normal = lambda self, exterior=False: normal(self, exterior)
   curvature = lambda self, ndims=-1: curvature(self, ndims)
-  swapaxes = swapaxes
-  transpose = transpose
+  swapaxes = lambda self: swapaxes(self)
+  transpose = lambda self: transpose(self)
   grad = lambda self, geom, ndims=0: grad(self, geom, ndims)
   laplace = lambda self, geom, ndims=0: grad(self, geom, ndims).div(geom, ndims)
   add_T = lambda self, axes=(-2,-1): add_T(self, axes)
@@ -3378,6 +3313,72 @@ def isarray(arg):
 
 def iszero(arg):
   return isinstance(arg.simplified, Zeros)
+
+def add(a, b):
+  a, b = _numpy_align(a, b)
+  return Add([a, b])
+
+def multiply(a, b):
+  a, b = _numpy_align(a, b)
+  return Multiply([a, b])
+
+def sum(arg, axis=None):
+  '''Sum array elements over a given axis.'''
+
+  arg = asarray(arg)
+  if axis is None:
+    axis = numpy.arange(arg.ndim)
+  elif numeric.isint(axis):
+    axis = numeric.normdim(arg.ndim, axis),
+  else:
+    axis = _norm_and_sort(arg.ndim, axis)
+    assert numpy.greater(numpy.diff(axis), 0).all(), 'duplicate axes in sum'
+  summed = arg
+  for ax in reversed(axis):
+    summed = Sum(summed, ax)
+  return summed
+
+def product(arg, axis):
+  arg = asarray(arg)
+  axis = numeric.normdim(arg.ndim, axis)
+  shape = arg.shape[:axis] + arg.shape[axis+1:]
+  trans = [i for i in range(arg.ndim) if i != axis] + [axis]
+  return Product(transpose(arg, trans))
+
+def power(arg, n):
+  arg, n = _numpy_align(arg, n)
+  return Power(arg, n)
+
+def dot(a, b, axes=None):
+  '''
+  Contract ``a`` and ``b`` along ``axes``.
+  '''
+  if axes is None:
+    a = asarray(a)
+    b = asarray(b)
+    assert b.ndim == 1 and b.shape[0] == a.shape[0]
+    for idim in range(1, a.ndim):
+      b = insertaxis(b, idim, a.shape[idim])
+    axes = 0,
+  else:
+    a, b = _numpy_align(a, b)
+  return multiply(a, b).sum(axes)
+
+def transpose(arg, trans=None):
+  arg = asarray(arg)
+  if trans is None:
+    normtrans = range(arg.ndim-1, -1, -1)
+  else:
+    normtrans = _normdims(arg.ndim, trans)
+    assert sorted(normtrans) == list(range(arg.ndim))
+  return Transpose(arg, normtrans)
+
+def swapaxes(arg, axis1, axis2):
+  arg = asarray(arg)
+  trans = numpy.arange(arg.ndim)
+  trans[axis1], trans[axis2] = trans[axis2], trans[axis1]
+  return transpose(arg, trans)
+
 
 def zeros(shape, dtype=float):
   return Zeros(shape, dtype)
