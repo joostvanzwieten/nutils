@@ -562,7 +562,7 @@ class Array(Evaluable):
   @property
   def optimized_for_numpy(self):
     if self.isconstant:
-      const, = self.eval()
+      const = self.eval()[0]
       return Constant(const)
     return super().optimized_for_numpy
 
@@ -650,7 +650,7 @@ class Constant(Array):
 
   def _get(self, i, item):
     if item.isconstant:
-      item, = item.eval()
+      item = item.eval()[0]
       return Constant(numeric.get(self.value, i, item))
 
   def _add(self, other):
@@ -725,7 +725,7 @@ class InsertAxis(Array):
     # We would like to return an array with stride zero for the inserted axis,
     # but this appears to be *slower* (checked with examples/cylinderflow.py)
     # than the implementation below.
-    length, = length
+    length = length[0]
     func = numpy.asarray(func)[(slice(None),)*(self.axis+1)+(None,)]
     if length != 1:
       func = numpy.repeat(func, length, self.axis+1)
@@ -947,7 +947,7 @@ class Get(Array):
     return Get(func, self.axis, item)
 
   def evalf(self, arr, item):
-    item, = item
+    item = int(item[0])
     return arr[(slice(None),)*(self.axis+1)+(item,)]
 
   def _derivative(self, var, seen):
@@ -1198,7 +1198,7 @@ class Concatenate(Array):
       axis = self.axis - (self.axis > i)
       return Concatenate([Get(f, i, item) for f in self.funcs], axis=axis)
     if item.isconstant:
-      item, = item.eval()
+      item = item.eval()[0]
       for f in self.funcs:
         if item < f.shape[i]:
           return Get(f, i, item)
@@ -1735,7 +1735,7 @@ class Take(Array):
     if indices == Range(length):
       return func
     if indices.isconstant:
-      indices_, = indices.eval()
+      indices_ = indices.eval()[0]
       ineg, = numpy.less(indices_, 0).nonzero()
       if numeric.isint(length):
         if len(ineg):
@@ -1816,7 +1816,7 @@ class Power(Array):
 
   def _derivative(self, var, seen):
     if self.power.isconstant:
-      p, = self.power.eval()
+      p = self.power.eval()[0]
       p_decr = p - (p!=0)
       return appendaxes(multiply(p, power(self.func, p_decr)), var.shape) * derivative(self.func, var, seen)
     # self = func**power
@@ -1875,7 +1875,7 @@ class Pointwise(Array):
   def simplified(self):
     args = [arg.simplified for arg in self.args]
     if all(arg.isconstant for arg in args):
-      retval, = self.evalf(*[arg.eval() for arg in args])
+      retval = self.evalf(*[arg.eval() for arg in args])[0]
       return Constant(retval).simplified
     return self.__class__(*args)
 
@@ -2070,7 +2070,7 @@ class Elemwise(Array):
     super().__init__(args=[index], shape=shape, dtype=dtype)
 
   def evalf(self, index):
-    index, = index
+    index = index[0]
     return self.data[index][_]
 
   @property
@@ -2090,7 +2090,7 @@ class ElemwiseFromCallable(Array):
     super().__init__(args=[index], shape=shape, dtype=dtype)
 
   def evalf(self, index):
-    i, = index
+    i = index[0]
     return numpy.asarray(self._func(i))[numpy.newaxis]
 
   def edit(self, op):
@@ -2244,7 +2244,7 @@ class Inflate(Array):
 
   def evalf(self, array, indices):
     assert indices.shape[0] == 1
-    indices, = indices
+    indices = indices[0]
     assert array.ndim == self.ndim+1
     warnings.warn('using explicit inflation; this is usually a bug.', ExpensiveEvaluationWarning)
     shape = list(array.shape)
@@ -2289,8 +2289,8 @@ class Inflate(Array):
     if axis != self.axis:
       return Inflate(Get(self.func,axis,item), self.dofmap, self.length, self.axis-(axis<self.axis))
     if self.dofmap.isconstant and item.isconstant:
-      dofmap, = self.dofmap.eval()
-      item, = item.eval()
+      dofmap = self.dofmap.eval()[0]
+      item = item.eval()[0]
       return Get(self.func, axis, tuple(dofmap).index(item)) if item in dofmap \
         else Zeros(self.shape[:axis]+self.shape[axis+1:], self.dtype)
 
@@ -2550,7 +2550,7 @@ class Find(Array):
 
   def evalf(self, where):
     assert where.shape[0] == 1
-    where, = where
+    where = where[0]
     index, = where.nonzero()
     return index[_]
 
@@ -2723,7 +2723,7 @@ class Ravel(Array):
     if i != self.axis:
       return Ravel(Get(self.func, i+(i>self.axis), item), self.axis-(i<self.axis))
     if item.isconstant and numeric.isint(self.func.shape[self.axis+1]):
-      item, = item.eval()
+      item = item.eval()[0]
       i, j = divmod(item, self.func.shape[self.axis+1])
       return Get(Get(self.func, self.axis, i), self.axis, j)
 
@@ -2828,8 +2828,8 @@ class Unravel(Array):
     return unravel(derivative(self.func, var, seen), axis=self.axis, shape=self.unravelshape)
 
   def evalf(self, f, sh1, sh2):
-    sh1, = sh1
-    sh2, = sh2
+    sh1 = sh1[0]
+    sh2 = sh2[0]
     return f.reshape(f.shape[:self.axis+1]+(sh1, sh2)+f.shape[self.axis+2:])
 
   def _get(self, axis, item):
@@ -2904,7 +2904,7 @@ class Mask(Array):
     if i != self.axis:
       return Mask(Get(self.func, i, item), self.mask, self.axis-(i<self.axis))
     if item.isconstant:
-      item, = item.eval()
+      item = item.eval()[0]
       where, = self.mask.nonzero()
       return Get(self.func, i, where[item])
 
@@ -2962,8 +2962,8 @@ class Range(Array):
       return Range(self.length, self.offset + offset._uninsert(0))
 
   def evalf(self, length, offset):
-    length, = length
-    offset, = offset
+    length = length[0]
+    offset = offset[0]
     return numpy.arange(offset, offset+length)[_]
 
 class Polyval(Array):
@@ -3129,8 +3129,8 @@ class Kronecker(Array):
     return Kronecker(func, self.axis, self.length, self.pos)
 
   def evalf(self, func, length, pos):
-    length, = length
-    pos, = pos
+    length = length[0]
+    pos = pos[0]
     retval = numpy.zeros(func.shape[:self.axis+1] + (length,) + func.shape[self.axis+1:], dtype=func.dtype)
     retval[(slice(None),)*(self.axis+1)+(pos,)] = func
     return retval
@@ -3173,8 +3173,8 @@ class Kronecker(Array):
     if axis != self.axis:
       return Kronecker(take(self.func, index, axis-(axis>self.axis)), self.axis, self.length, self.pos)
     if self.pos.isconstant and index.isconstant:
-      pos, = self.pos.eval()
-      index, = index.eval()
+      pos = self.pos.eval()[0]
+      index = index.eval()[0]
       if pos in index:
         assert tuple(index).count(pos) == 1
         newpos = tuple(index).index(pos)
@@ -3212,7 +3212,7 @@ class Kronecker(Array):
     if axis != self.axis:
       return Kronecker(mask(self.func, maskvec, axis-(axis>self.axis)), self.axis, self.length, self.pos)
     if self.pos.isconstant:
-      pos, = self.pos.eval()
+      pos = self.pos.eval()[0]
       length = maskvec.sum()
       if maskvec[pos]:
         return Kronecker(self.func, self.axis, length, maskvec[:pos].sum())
@@ -3850,7 +3850,7 @@ def take(arg, index, axis):
   if index.dtype == bool:
     assert index.shape[0] == arg.shape[axis]
     if index.isconstant:
-      mask, = index.eval()
+      mask = index.eval()[0]
       return Mask(arg, mask, axis)
     index = find(index)
   return Take(arg, index, axis)
@@ -3862,7 +3862,7 @@ def find(arg):
   assert arg.ndim == 1 and arg.dtype == bool
 
   if arg.isconstant:
-    arg, = arg.eval()
+    arg = arg.eval()[0]
     index, = arg.nonzero()
     return asarray(index)
 
