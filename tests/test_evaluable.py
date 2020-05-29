@@ -430,6 +430,7 @@ _check('transpose2', lambda a: evaluable.transpose(a,[1,2,0]), lambda a: a.trans
 _check('expand_dims', lambda a: evaluable.expand_dims(a,1), lambda a: numpy.expand_dims(a,2), [(2,4)])
 _check('get', lambda a: evaluable.get(a,1,1), lambda a: a[...,1,:], [(4,3,4)])
 _check('getvar', lambda a: evaluable.get(evaluable.Constant([[1,2],[3,4]]),1,evaluable.Int(a)%2), lambda a: numpy.array([[1,2],[3,4]])[:,a.astype(int)%2].T, [()])
+_check('choose', lambda a: evaluable.choose(evaluable.Int(a)%2, (evaluable.Constant([1,2]), evaluable.Constant([3,4]))), lambda a: numpy.choose(a[:,_].astype(int)%2, [numpy.array([1,2])[_], numpy.array([3,4])[_]]), [()])
 _check('takediag141', lambda a: evaluable.takediag(a,0,2), lambda a: numeric.takediag(a,1,3), [(1,4,1)])
 _check('takediag434', lambda a: evaluable.takediag(a,0,2), lambda a: numeric.takediag(a,1,3), [(4,3,4)])
 _check('takediag343', lambda a: evaluable.takediag(a,0,2), lambda a: numeric.takediag(a,1,3), [(3,4,3)])

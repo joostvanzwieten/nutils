@@ -965,6 +965,28 @@ class Get(Array):
     if tryget is not None:
       return Get(tryget, self.axis-(i<self.axis), self.item)
 
+class Choose(Array):
+
+  __slots__ = 'index', 'choices'
+
+  @types.apply_annotations
+  def __init__(self, index:asarray, choices:types.tuple[asarray]):
+    shape = index.shape
+    if not all(choice.shape == shape for choice in choices):
+      raise ValueError('the choices have different shapes than the index')
+    self.index = index
+    self.choices = choices
+    super().__init__(args=(index, *choices), shape=shape, dtype=_jointdtype(*(choice.dtype for choice in choices)))
+
+  def edit(self, op):
+    return Choose(op(self.index), tuple(map(op, self.choices)))
+
+  def evalf(self, index, *choices):
+    return numpy.choose(index, choices)
+
+  def _derivative(self, var, seen):
+    return Choose(appendaxes(self.index, var.shape), tuple(derivative(choice, var, seen) for choice in self.choices))
+
 class Product(Array):
 
   __slots__ = 'func',
@@ -3487,6 +3509,10 @@ def tanh(arg):
 
 def arctanh(arg):
   return .5 * (ln(1+arg) - ln(1-arg))
+
+def choose(index, choices):
+  index, *choices = _numpy_align(index, *choices)
+  return Choose(index, tuple(choices))
 
 def piecewise(level, intervals, *funcs):
   return Get(stack(funcs, axis=0), axis=0, item=util.sum(Int(greater(level, interval)) for interval in intervals))
