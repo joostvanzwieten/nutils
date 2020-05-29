@@ -3412,24 +3412,9 @@ def reciprocal(arg):
   arg = asarray(arg)
   return power(arg, _inflate_scalar(-1, arg.shape))
 
-def grad(arg, coords, ndims=0):
-  return asarray(arg).grad(coords, ndims)
-
-def symgrad(arg, coords, ndims=0):
-  return asarray(arg).symgrad(coords, ndims)
-
-def div(arg, coords, ndims=0):
-  return asarray(arg).div(coords, ndims)
-
 def negative(arg):
   arg = asarray(arg)
   return multiply(arg, _inflate_scalar(-1, arg.shape))
-
-def nsymgrad(arg, coords):
-  return (symgrad(arg,coords) * coords.normal()).sum(-1)
-
-def ngrad(arg, coords):
-  return (grad(arg,coords) * coords.normal()).sum(-1)
 
 def sin(x):
   return Sin(x)
@@ -3766,14 +3751,6 @@ def localgradient(arg, ndims):
   'local derivative'
 
   return derivative(arg, LocalCoords(ndims))
-
-def dotnorm(arg, coords):
-  'normal component'
-
-  return sum(arg * coords.normal(), -1)
-
-def normal(geom):
-  return geom.normal()
 
 def kronecker(arg, axis, length, pos):
   arg = asarray(arg)
