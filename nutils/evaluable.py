@@ -947,14 +947,8 @@ class Get(Array):
     return Get(func, self.axis, item)
 
   def evalf(self, arr, item):
-    if len(item) == 1:
-      item, = item
-      p = slice(None)
-    elif len(arr) == 1:
-      p = numpy.zeros(len(item), dtype=int)
-    else:
-      p = numpy.arange(len(item))
-    return arr[(p,)+(slice(None),)*self.axis+(item,)]
+    item, = item
+    return arr[(slice(None),)*(self.axis+1)+(item,)]
 
   def _derivative(self, var, seen):
     f = derivative(self.func, var, seen)
