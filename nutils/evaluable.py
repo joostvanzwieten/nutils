@@ -3515,7 +3515,12 @@ def choose(index, choices):
   return Choose(index, tuple(choices))
 
 def piecewise(level, intervals, *funcs):
-  return Get(stack(funcs, axis=0), axis=0, item=util.sum(Int(greater(level, interval)) for interval in intervals))
+  index = util.sum(Int(greater(level, interval)) for interval in intervals)
+  if index.ndim != 0:
+    raise ValueError('expected a level with dimension 0 but got dimension {!r}'.format(index.ndim))
+  funcs = _numpy_align(*funcs)
+  index = appendaxes(index, funcs[0].shape)
+  return choose(index, funcs)
 
 def partition(f, *levels):
   '''Create a partition of unity for a scalar function f.
