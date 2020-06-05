@@ -15,7 +15,7 @@ class check(TestCase):
       poly = numpy.array([[1,-2,1],[0,2,-2],[0,0,1]]) # 2nd order bernstein
     elif self.ndim == 2:
       r, theta = param
-      self.geom = r * evaluable.stack([evaluable.cos(theta), evaluable.sin(theta)])
+      self.geom = r * evaluable.Concatenate([evaluable.InsertAxis(evaluable.Cos(theta), 0, 1), evaluable.InsertAxis(evaluable.Sin(theta), 0, 1)])
       poly = numeric.poly_outer_product([[1,-2,1],[0,2,-2],[0,0,1]], [[1,-1],[0,1]]) # 2nd x 1st order bernstein
     else:
       raise Exception('invalid ndim {!r}'.format(self.ndim))
@@ -86,7 +86,7 @@ class check(TestCase):
     trans = numpy.arange(self.op_args.ndim,0,-1) % self.op_args.ndim
     self.assertFunctionAlmostEqual(decimal=15,
       desired=numpy.transpose(self.n_op_argsfun, [0]+list(trans+1)),
-      actual=evaluable.transpose(self.op_args, trans))
+      actual=evaluable.Transpose(self.op_args, trans))
 
   def test_insertaxis(self):
     for axis in range(self.op_args.ndim+1):
@@ -99,13 +99,13 @@ class check(TestCase):
     for ax1, ax2 in self.pairs:
       self.assertFunctionAlmostEqual(decimal=15,
         desired=numeric.takediag(self.n_op_argsfun, ax1+1, ax2+1),
-        actual=evaluable.takediag(self.op_args, ax1, ax2))
+        actual=evaluable.TakeDiag(self.op_args, ax1, ax2))
 
   def test_eig(self):
     if self.op_args.dtype == float:
       for ax1, ax2 in self.pairs:
         A = self.sample.eval(self.op_args)
-        L, V = self.sample.eval(list(evaluable.eig(self.op_args, axes=(ax1,ax2))))
+        L, V = self.sample.eval(list(evaluable.Eig(self.op_args, axes=(ax1,ax2))))
         self.assertArrayAlmostEqual(decimal=11,
           actual=(numpy.expand_dims(V,ax2+1) * numpy.expand_dims(L,ax2+2).swapaxes(ax1+1,ax2+2)).sum(ax2+2),
           desired=(numpy.expand_dims(A,ax2+1) * numpy.expand_dims(V,ax2+2).swapaxes(ax1+1,ax2+2)).sum(ax2+2))
