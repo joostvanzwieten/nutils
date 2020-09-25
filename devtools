@@ -1,0 +1,406 @@
+#! /usr/bin/env python3
+
+import sys, os, re, subprocess, shlex, typing, json, uuid, textwrap
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping, Dict, Optional, Sequence, List, Generator
+from os import PathLike
+from argparse import ArgumentParser, Namespace
+from contextlib import ExitStack, contextmanager
+from tempfile import TemporaryDirectory, NamedTemporaryFile
+from subprocess import CompletedProcess
+from distutils.version import StrictVersion
+
+GITHUB_ACTIONS = bool(os.environ.get('GITHUB_ACTIONS'))
+OFFICIAL_CONTAINER_REPO = 'ghcr.io/evalf/nutils'
+
+class Error(Exception): pass
+
+class log:
+
+  if GITHUB_ACTIONS:
+
+    @staticmethod
+    def debug(*args: Any) -> None:
+      print(*args)
+
+    info = debug
+
+    @staticmethod
+    def warning(*args: Any) -> None:
+      for line in ' '.join(map(str, args)).split('\n'):
+        print(f'::warning ::{line}')
+
+    @staticmethod
+    def _error(*args: Any) -> None:
+      for line in ' '.join(map(str, args)).split('\n'):
+        print(f'::error ::{line}')
+      raise SystemExit(1)
+
+    @staticmethod
+    def set_output(key: str, value: str) -> None:
+      print(f'::set-output name={key}::{value}')
+
+  else:
+
+    @staticmethod
+    def debug(*args: Any) -> None:
+      print(*args)
+
+    @staticmethod
+    def info(*args: Any) -> None:
+      print('\033[1;37m', end='')
+      for line in ' '.join(map(str, args)).split('\n'):
+        print(line)
+      print('\033[0m', end='', flush=True)
+
+    @staticmethod
+    def warning(*args: Any) -> None:
+      print('\033[1;33m', end='')
+      for line in ' '.join(map(str, args)).split('\n'):
+        print(f'WARNING: {line}')
+      print('\033[0m', end='', flush=True)
+
+    @staticmethod
+    def _error(*args: Any) -> None:
+      print('\033[1;31m', end='')
+      for line in ' '.join(map(str, args)).split('\n'):
+        print(f'ERROR: {line}')
+      print('\033[0m', end='', flush=True)
+      raise SystemExit
+
+    @staticmethod
+    def set_output(key: str, value: str) -> None:
+      pass
+
+def run(*args: str,
+        check: bool = True,
+        env: Mapping[str, str] = {},
+        stdin: int = subprocess.DEVNULL,
+        stdout: Optional[int] = None,
+        capture_output: bool = False,
+        print_cmdline: bool = True,
+        cwd: Optional[PathLike] = None,
+        ) -> subprocess.CompletedProcess:
+  if print_cmdline:
+    log.debug('running {}'.format(' '.join(map(shlex.quote, args))))
+  fullenv: Optional[Mapping[str, str]]
+  if env:
+    fullenv = typing.cast(Dict[str, str], dict(os.environ))
+    fullenv.update(env)
+  else:
+    fullenv = None
+  proc = subprocess.run(args, env=fullenv, stdin=stdin, stdout=stdout, capture_output=capture_output, cwd=cwd)
+  if check and proc.returncode:
+    raise Error(f'process exited with code {proc.returncode}')
+  return proc
+
+class Git:
+
+  def __init__(self, root: str = '.') -> None:
+    self._root = root
+    self.path = Path(root)
+
+  def _run(self, *args: str, **kwargs) -> CompletedProcess:
+    return run(*args, cwd=self._root, **kwargs)
+
+  @property
+  def head_ref(self):
+    return self._run('git', 'symbolic-ref', 'HEAD', capture_output=True).stdout.decode().strip()
+
+  def get_commit_from_rev(self, rev: str) -> str:
+    return self._run('git', 'rev-parse', '--verify', rev, capture_output=True).stdout.decode().strip()
+
+  def get_commit_timestamp(self, rev: str) -> int:
+    return int(self._run('git', 'show', '-s', '--format=%ct', rev, capture_output=True).stdout.decode().strip())
+
+  @contextmanager
+  def worktree(self, rev: str, *, detach: bool = False) -> Generator['Git', None, None]:
+    wt = ''
+    try:
+      with TemporaryDirectory() as wt:
+        self._run('git', 'worktree', 'add', *(['--detach'] if detach else []), wt, rev)
+        yield Git(wt)
+    finally:
+      if wt:
+        self._run('git', 'worktree', 'remove', wt)
+
+@dataclass
+class ContainerMount:
+  src: Path
+  dst: str
+  rw: bool = False
+
+class Container:
+
+  built_images: List[str] = []
+
+  @classmethod
+  @contextmanager
+  def new_from(cls, from_image: str, *, mounts: Sequence[ContainerMount] = (), network: Optional[str] = None) -> Generator['Container', None, None]:
+    id = f'work-{uuid.uuid4()}'
+    args = ['buildah', 'from', '--name', id]
+    if network:
+      args += ['--network', network]
+    for mnt in mounts:
+      args += ['--volume', f'{mnt.src.resolve()}:{mnt.dst}:{"rw" if mnt.rw else "ro"}']
+    args += [from_image]
+    log.debug('FROM', from_image)
+    run(*args, print_cmdline=False)
+    try:
+      yield cls(id)
+    finally:
+      log.debug('destroy container')
+      run('buildah', 'rm', id, print_cmdline=False)
+      del id
+
+  def __init__(self, id: str) -> None:
+    self._id = id
+
+  def run(self, *args: str, env: Mapping[str, str] = {}, capture_output=False) -> CompletedProcess:
+    cmdline = []
+    if env:
+      cmdline.append('env')
+      for key, value in env.items():
+        assert '-' not in key
+        cmdline.append(f'{key}={value}')
+    cmdline.extend(args)
+    log.debug('RUN', *(f'{key}={value}' for key, value in env.items()), *args)
+    return run('buildah', 'run', '--', self._id, *cmdline, print_cmdline=False, capture_output=capture_output)
+
+  def copy(self, *src: os.PathLike, dst: str) -> None:
+    log.debug('COPY', *src, dst)
+    run('buildah', 'copy', self._id, *map(str, src), dst, print_cmdline=False)
+
+  def add_env(self, key: str, value: str) -> None:
+    log.debug('ENV', f'{key}={value}')
+    run('buildah', 'config', '--env', f'{key}={value}', self._id, print_cmdline=False)
+
+  def add_label(self, key: str, value: str) -> None:
+    log.debug('LABEL', f'{key}={value}')
+    run('buildah', 'config', '--label', f'{key}={value}', self._id, print_cmdline=False)
+
+  def add_volume(self, path: str) -> None:
+    log.debug('VOLUME', path)
+    run('buildah', 'config', '--volume', path, self._id, print_cmdline=False)
+
+  def set_workingdir(self, path: str) -> None:
+    log.debug('WORKDIR', path)
+    run('buildah', 'config', '--workingdir', path, self._id, print_cmdline=False)
+
+  def set_entrypoint(self, *cmd: str) -> None:
+    log.debug('ENTRYPOINT', json.dumps(cmd))
+    run('buildah', 'config', '--entrypoint', json.dumps(cmd), self._id, print_cmdline=False)
+
+  def set_cmd(self, *cmd: str) -> None:
+    log.debug('CMD', json.dumps(cmd))
+    run('buildah', 'config', '--cmd', ' '.join(map(shlex.quote, cmd)), self._id, print_cmdline=False)
+
+  def commit(self, name: Optional[str] = None) -> str:
+    with NamedTemporaryFile('r') as f:
+      args = ['buildah', 'commit', '--iidfile', f.name, '--format', 'oci', self._id]
+      if name:
+        args.append(name)
+      run(*args)
+      image_id = f.read()
+      assert image_id
+      self.built_images.append(image_id)
+      log.debug(f'created container image with id {image_id}')
+      return image_id
+
+def get_container_tag_from_ref(ref: str) -> str:
+  if not ref.startswith('refs/'):
+    raise Error(f'expected an absolute ref, e.g. `refs/heads/master`, but got `{ref}`')
+  elif ref == 'refs/heads/master':
+    return 'latest'
+  elif ref.startswith('refs/heads/release/'):
+    return ref[19:]
+  else:
+    raise Error(f'cannot determine container tag from ref `{ref}`')
+
+def build_container_base_image(image_name: str) -> str:
+  '''Build the container base image, i.e. a Nutils container sans Nutils.
+
+  Returns
+  -------
+  image_id : str
+      The id of the built image.
+  '''
+
+  # Package `libtbb2` is required when using Intel MKL with environment
+  # variable `MKL_THREADING_LAYER` set to `TBB`, which is nowadays the default.
+
+  with Container.new_from('debian:bullseye', network='host') as container:
+    container.run('sed', '-i', 's/ main$/ main contrib non-free/', '/etc/apt/sources.list')
+    container.run('apt', 'update')
+    container.run('apt', 'install', '-y', '--no-install-recommends', 'python3', 'python3-pip', 'python3-wheel', 'python3-ipython', 'python3-numpy', 'python3-scipy', 'python3-matplotlib', 'python3-pil', 'python3-meshio', 'libmkl-rt', 'libtbb2', env=dict(DEBIAN_FRONTEND='noninteractive'))
+    container.run('pip', 'install', '--no-cache-dir', 'bottombar', 'treelog', 'stringly')
+    container.add_label('org.opencontainers.image.url', 'https://github.com/evalf/nutils')
+    container.add_label('org.opencontainers.image.source', 'https://github.com/evalf/nutils')
+    container.add_label('org.opencontainers.image.authors', 'Evalf')
+    return container.commit(image_name)
+
+def build_container_image(base: str, dist: os.PathLike, examples: os.PathLike, image_name: str, commit: Optional[str]) -> str:
+  dist = Path(dist)
+  if not dist.exists():
+    raise Error(f'cannot find dist dir: {dist}')
+  examples = Path(examples)
+  if not examples.exists():
+    raise Error(f'cannot find example dir: {examples}')
+
+  with Container.new_from(base, network='none', mounts=[ContainerMount(src=dist, dst='/mnt')]) as container:
+    container.run('pip', 'install', '--no-cache-dir', '--no-index', '--find-links', 'file:///mnt/', 'nutils', env=dict(PYTHONHASHSEED='0'))
+    container.add_label('org.opencontainers.image.url', 'https://github.com/evalf/nutils')
+    container.add_label('org.opencontainers.image.source', 'https://github.com/evalf/nutils')
+    container.add_label('org.opencontainers.image.authors', 'Evalf')
+    if commit:
+      container.add_label('org.opencontainers.image.revision', commit)
+    container.add_volume('/app')
+    container.add_volume('/log')
+    container.set_workingdir('/app')
+    container.set_entrypoint('/usr/bin/python3', '-u')
+    container.set_cmd('help')
+    container.add_env('NUTILS_MATRIX', 'mkl')
+    container.add_env('NUTILS_OUTDIR', '/log')
+    # Copy examples and generate a help message.
+    msg = textwrap.dedent('''\
+      Usage
+      =====
+
+      This container includes the following examples:
+
+      ''')
+    for example in sorted(examples.glob('*.py')):
+      if example.name == '__init__.py':
+        continue
+      container.copy(example, dst=f'/app/{example.stem}')
+      msg += f'*   {example.stem}\n'
+    msg += textwrap.dedent(f'''\
+
+      To run an example, add the name of the example and any additional arguments to the command line.
+      For example, you can run example `laplace` with
+
+          docker run --rm -it {image_name} laplace
+
+      HTML log files are generated in the `/log` directory of the container. If
+      you want to store the log files in `/path/to/log` on the
+      host, add `-v /path/to/log:/log` to the command line before the
+      name of the image. Extending the previous example:
+
+          docker run --rm -it -v /path/to/log:/log {image_name} laplace
+
+      To run a Python script in this container, bind mount the directory
+      containing the script, including all files necessary to run the script,
+      to `/app` in the container and add the relative path to the script and
+      any arguments to the command line. For example, you can run
+      `/path/to/script/example.py` with Docker using
+
+          docker run --rm -it -v /path/to/script:/app:ro {image_name} example.py
+
+      Installed software
+      ==================
+
+      ''')
+    pip_list = {item['name']: item['version'] for item in json.loads(container.run('python3', '-m', 'pip', 'list', '--format', 'json', capture_output=True).stdout.decode())}
+    v = dict(
+      nutils=pip_list['nutils'] + (f'  (git: {commit})' if commit else ''),
+      python=container.run('python3', '--version', capture_output=True).stdout.decode().replace('Python', '').strip(),
+      **{name: pip_list[name] for name in ('numpy', 'scipy', 'matplotlib')})
+    msg += ''.join(f'{name:18}{version}\n' for name, version in v.items())
+    with NamedTemporaryFile('w') as f:
+      f.write(f'print({msg!r})')
+      f.flush()
+      container.copy(f.name, dst='/app/help')
+    return container.commit(image_name)
+
+if __name__ == '__main__':
+
+  git = Git()
+
+  parser = ArgumentParser()
+  parser.set_defaults(func=lambda args: parser.print_help())
+  subparsers = parser.add_subparsers()
+
+  def cmd_gha_get_base_and_image_tags(args: Namespace) -> None:
+    if os.environ.get('GITHUB_EVENT_NAME') == 'pull_request':
+      ref = os.environ.get('GITHUB_BASE_REF')
+      if not ref:
+        raise Error('`GITHUB_BASE_REF` environment variable is empty')
+      base = '_base_' + get_container_tag_from_ref('refs/heads/' + ref)
+      if sha := os.environ.get("GITHUB_SHA", ''):
+        image = '_git_' + sha
+      else:
+        image = '_pr'
+    else:
+      ref = os.environ.get('GITHUB_REF')
+      if not ref:
+        raise Error('`GITHUB_REF` environment variable is empty')
+      image = get_container_tag_from_ref(ref)
+      base = '_base_' + image
+    log.set_output('base', base)
+    log.set_output('image', image)
+
+  subparser = subparsers.add_parser('gha-get-base-and-image-tags')
+  subparser.set_defaults(func=cmd_gha_get_base_and_image_tags)
+
+  def cmd_build_container_base_image(args: Namespace) -> None:
+    if args.name and ':' in args.name:
+      name = args.name
+    else:
+      name = f'{args.name or OFFICIAL_CONTAINER_REPO}:_base_{get_container_tag_from_ref(git.head_ref)}'
+    log.info(f'building container base image with name `{name}`')
+    image_id = build_container_base_image(name)
+    log.set_output('id', image_id)
+
+  subparser = subparsers.add_parser('build-container-base-image', help='build an OCI compatible container base image')
+  subparser.set_defaults(func=cmd_build_container_base_image)
+  subparser.add_argument('--name', metavar='NAME', help='the name to attach to the image; defaults to a {OFFICIAL_CONTAINER_REPO}:TAG where TAG is based on the current HEAD')
+
+  def cmd_build_container_image(args: Namespace) -> None:
+    if not args.build_from_worktree and not args.revision:
+      raise Error('either `--revision` or `--build-from-worktree` must be specified')
+    rev = args.revision or 'HEAD'
+    commit = git.get_commit_from_rev(rev)
+    if args.build_from_worktree and args.revision and (head_commit := git.get_commit_from_rev('HEAD')) != commit:
+      raise Error(f'`HEAD` points to `{head_commit}` but `--revision={args.revision}` points to `{commit}`')
+    if args.name and ':' in args.name:
+      name = args.name
+      tag = name.rsplit(name, 1)[-1]
+    else:
+      tag = get_container_tag_from_ref(rev)
+      name = f'{args.name or OFFICIAL_CONTAINER_REPO}:{tag}'
+    base = args.base
+    if ':' not in base.split('/')[-1]:
+      base = f'{base}:_base_{tag}'
+    with ExitStack() as stack:
+      if args.build_from_worktree:
+        dist = Path()/'dist'
+        examples = Path()/'examples'
+        log.info(f'installing Nutils from {dist}')
+        log.info(f'using examples from {examples}')
+      else:
+        # Check out Nutils in a clean working tree, build a wheel and use the working tree as `src`.
+        log.info(f'using examples from commit {commit}')
+        src = stack.enter_context(git.worktree(typing.cast(str, commit)))
+        log.info(f'building wheel from commit {commit}')
+        run(sys.executable, 'setup.py', 'bdist_wheel', cwd=str(src.path), env=dict(SOURCE_DATE_EPOCH=str(src.get_commit_timestamp('HEAD'))))
+        dist = src.path/'dist'
+        examples = src.path/'examples'
+      image_id = build_container_image(base, dist, examples, name, commit)
+      log.set_output('id', image_id)
+      log.set_output('name', name)
+      log.set_output('tag', tag)
+      log.set_output('base', base)
+
+  subparser = subparsers.add_parser('build-container-image', help='build an OCI compatible container image')
+  subparser.set_defaults(func=cmd_build_container_image)
+  subparser.add_argument('--base', required=True, help='the base image to build upon; example: `docker.io/evalf/nutils` or `docker.io/evalf/nutils:_base_latest`')
+  subparser.add_argument('--name', metavar='NAME', help='the name to attach to the image; defaults to `{OFFICIAL_CONTAINER_REPO}:TAG` where TAG is based on REV')
+  subparser.add_argument('--revision', '--rev', metavar='REV', help='set image label `org.opencontainers.image.revision` to the commit hash refered to by REV')
+  subparser.add_argument('--build-from-worktree', action='store_const', const=True, default=False, help='build from the worktree')
+
+  args = parser.parse_args()
+  try:
+    args.func(args)
+  except Error as e:
+    log._error(*e.args)
